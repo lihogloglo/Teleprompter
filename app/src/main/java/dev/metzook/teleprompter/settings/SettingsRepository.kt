@@ -20,6 +20,7 @@ data class PrompterSettings(
     val vaultUri: String? = null,
     val asrOverlay: Boolean = true,
     val asrModelId: String = "zipformer-en-20M",
+    val followVoice: Boolean = false,
     val gestures: Map<GestureSlot, PrompterAction> =
         GestureSlot.entries.associateWith { it.default },
 )
@@ -36,6 +37,7 @@ class SettingsRepository(private val context: Context) {
     private val keyVaultUri = stringPreferencesKey("vault_uri")
     private val keyAsrOverlay = booleanPreferencesKey("asr_overlay")
     private val keyAsrModelId = stringPreferencesKey("asr_model_id")
+    private val keyFollowVoice = booleanPreferencesKey("follow_voice")
 
     private fun gestureKey(slot: GestureSlot) =
         stringPreferencesKey("gesture_${slot.name.lowercase()}")
@@ -51,6 +53,7 @@ class SettingsRepository(private val context: Context) {
             vaultUri = p[keyVaultUri],
             asrOverlay = p[keyAsrOverlay] ?: true,
             asrModelId = p[keyAsrModelId] ?: "zipformer-en-20M",
+            followVoice = p[keyFollowVoice] ?: false,
             gestures = GestureSlot.entries.associateWith { slot ->
                 p[gestureKey(slot)]
                     ?.let { stored -> PrompterAction.entries.firstOrNull { it.name == stored } }
@@ -99,5 +102,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAsrModelId(value: String) {
         context.dataStore.edit { it[keyAsrModelId] = value }
+    }
+
+    suspend fun setFollowVoice(value: Boolean) {
+        context.dataStore.edit { it[keyFollowVoice] = value }
     }
 }

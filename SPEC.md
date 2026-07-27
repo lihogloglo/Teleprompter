@@ -275,8 +275,21 @@ live-transcript debug overlay — user confirmed live transcription works with t
 Bluetooth/HID remote keys landed (REMOTE_CENTER/PREV/NEXT mappable slots). Recognizer results
 include token-level timestamps — use them in M3's matcher. Branding done: `assets/branding/logo.svg`
 master + adaptive/monochrome launcher icon (eyeline-as-play-button mark).
-**Next: M3 — the matcher** (`follow/` package, pure Kotlin, transcript-replay tests; French +
-English from day one).
+**M3 shipped** (2026-07-27, pending on-device validation): `follow/` package (pure Kotlin) —
+TextNorm (diacritic strip, French elision + hyphen + contraction splitting, number expansion
+en/fr incl. quatre-vingts/soixante-et-onze), ScriptIndex (spoken tokens with char offsets over
+the exact rendered text via shared `DisplaySegment` flattening in vault/ScriptModel), and the
+Matcher: greedy fuzzy forward scan (Levenshtein-tolerant, short words exact) + an always-on
+consecutive-run rejoin tracker over a ±250-token window (one mechanism covers improv-rejoin,
+retakes and skip-ahead) + a sliding match-quality window for the improv freeze; rolling
+tokens/sec EMA from word timestamps. Transcript-replay harness + 29 unit tests (clean read,
+misrecognitions, freeze, rejoin, retake, skip, French incl. degraded ASR output). Wiring:
+AsrEngine emits word-level `AsrEvent`s (BPE pieces merged, utterance-scoped timestamps);
+PrompterScreen "Follow voice" chip (persisted; model auto-picked by script `lang`) drives a
+critically-damped scroll toward the anchor line with rate feed-forward; eyeline marker dims
+while frozen; live remaining-time from measured rate. Timed scrolling remains the fallback.
+**Next: on-device validation of follow mode, then M4 robustness** (tuning freeze/rejoin
+thresholds on real speech, manual re-anchor via long-press, lost state, start-on-voice).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*

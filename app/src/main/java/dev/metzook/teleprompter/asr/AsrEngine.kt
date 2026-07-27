@@ -11,8 +11,13 @@ import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import dev.metzook.teleprompter.follow.TimedWord
+import dev.metzook.teleprompter.follow.mergeBpeTokens
 import java.io.File
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 data class AsrState(
@@ -22,6 +27,19 @@ data class AsrState(
     val decodeMs: Int = 0,
     val error: String? = null,
 )
+
+/**
+ * Word-level stream for the matcher: growing partials per utterance, then a
+ * final at the endpoint. Word timestamps are utterance-relative — the matcher
+ * only compares times within one utterance.
+ */
+sealed class AsrEvent {
+    abstract val utterance: Int
+    abstract val words: List<TimedWord>
+
+    data class Partial(override val utterance: Int, override val words: List<TimedWord>) : AsrEvent()
+    data class Final(override val utterance: Int, override val words: List<TimedWord>) : AsrEvent()
+}
 
 /**
  * Mic → streaming recognizer loop (SPEC §3.1, M2 slice). Runs on its own
@@ -34,6 +52,12 @@ class AsrEngine(
 ) {
     private val _state = MutableStateFlow(AsrState())
     val state: StateFlow<AsrState> = _state
+
+    private val _events = MutableSharedFlow<AsrEvent>(
+        extraBufferCapacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val events: SharedFlow<AsrEvent> = _events
 
     @Volatile
     private var running = false
@@ -113,6 +137,7 @@ class AsrEngine(
         val shorts = ShortArray(CHUNK)
         val floats = FloatArray(CHUNK)
         var lastFinal = ""
+        var utterance = 0
         try {
             while (running) {
                 val n = record.read(shorts, 0, CHUNK)
@@ -122,11 +147,17 @@ class AsrEngine(
                 stream.acceptWaveform(if (n == CHUNK) floats else floats.copyOf(n), SAMPLE_RATE)
                 while (recognizer.isReady(stream)) recognizer.decode(stream)
                 val decodeMs = ((System.nanoTime() - t0) / 1_000_000).toInt()
-                var partial = recognizer.getResult(stream).text
+                val result = recognizer.getResult(stream)
+                var partial = result.text
+                val words = mergeBpeTokens(result.tokens.asList(), result.timestamps)
                 if (recognizer.isEndpoint(stream)) {
+                    if (words.isNotEmpty()) _events.tryEmit(AsrEvent.Final(utterance, words))
                     if (partial.isNotBlank()) lastFinal = partial
+                    utterance++
                     recognizer.reset(stream)
                     partial = ""
+                } else if (words.isNotEmpty()) {
+                    _events.tryEmit(AsrEvent.Partial(utterance, words))
                 }
                 _state.value = AsrState(
                     listening = true,

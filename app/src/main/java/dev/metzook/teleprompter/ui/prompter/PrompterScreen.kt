@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, FlowPreview::class)
 
 package dev.metzook.teleprompter.ui.prompter
 
@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -81,12 +83,20 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextLayoutResult
 import dev.metzook.teleprompter.KeyCommandBus
 import dev.metzook.teleprompter.asr.AsrEngine
+import dev.metzook.teleprompter.asr.AsrEvent
 import dev.metzook.teleprompter.asr.AsrModel
 import dev.metzook.teleprompter.asr.AsrModels
 import dev.metzook.teleprompter.asr.AsrState
 import dev.metzook.teleprompter.asr.ModelManager
+import dev.metzook.teleprompter.follow.FollowMode
+import dev.metzook.teleprompter.follow.MatchLang
+import dev.metzook.teleprompter.follow.Matcher
+import dev.metzook.teleprompter.follow.ScriptIndex
+import dev.metzook.teleprompter.follow.SpokenSegment
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
 import dev.metzook.teleprompter.settings.SettingsRepository
@@ -94,6 +104,8 @@ import dev.metzook.teleprompter.vault.MarkdownParser
 import dev.metzook.teleprompter.vault.ParsedScript
 import dev.metzook.teleprompter.vault.Script
 import dev.metzook.teleprompter.vault.ScriptRepository
+import dev.metzook.teleprompter.vault.toDisplaySegments
+import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -141,14 +153,18 @@ fun PrompterScreen(
     var persistWpm by remember { mutableStateOf(true) }
     var persistFont by remember { mutableStateOf(true) }
     var asrModel by remember { mutableStateOf<AsrModel?>(null) }
+    var preferredModel by remember { mutableStateOf<AsrModel?>(null) }
+    var asrOverlayOn by remember { mutableStateOf(true) }
+    var followVoice by remember { mutableStateOf(false) }
+    var scriptLang by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(scriptId) {
         val s = settingsRepo.settings.first()
         gestureMap = s.gestures
         pinchEnabled = s.pinchResize
         countdownSec = s.countdownSec
-        val model = AsrModels.byId(s.asrModelId)
-        asrModel = if (s.asrOverlay && modelManager.isInstalled(model)) model else null
+        asrOverlayOn = s.asrOverlay
+        followVoice = s.followVoice
         val loadedScript = withContext(Dispatchers.IO) { repo.load(scriptId) }
         if (loadedScript != null) {
             val p = withContext(Dispatchers.Default) { MarkdownParser.parse(loadedScript.body) }
@@ -158,6 +174,14 @@ fun PrompterScreen(
             persistFont = p.overrides.fontScale == null
             mirrorH = p.overrides.mirror ?: s.mirrorH
             mirrorV = s.mirrorV
+            scriptLang = p.overrides.lang
+            // A model matching the script's language wins over the configured one.
+            val byLang = p.overrides.lang?.let { tag ->
+                AsrModels.ALL.firstOrNull { it.lang.equals(tag.trim(), ignoreCase = true) }
+            }
+            preferredModel = listOfNotNull(byLang, AsrModels.byId(s.asrModelId))
+                .firstOrNull { modelManager.isInstalled(it) }
+            asrModel = if (s.asrOverlay || s.followVoice) preferredModel else null
             parsed = p
             script = loadedScript
         }
@@ -195,6 +219,19 @@ fun PrompterScreen(
 
     val annotated = remember(parsedScript) { parsedScript.toAnnotatedString() }
     val wordCount = remember(parsedScript) { parsedScript.spokenWordCount.coerceAtLeast(1) }
+
+    // Spoken-token index over the exact rendered text; the matcher's anchor
+    // maps to a char offset, then to a line via the text layout.
+    val scriptIndex = remember(parsedScript, asrModel) {
+        ScriptIndex.build(
+            parsedScript.toDisplaySegments().map { SpokenSegment(it.text, it.spoken) },
+            MatchLang.from(asrModel?.lang ?: scriptLang),
+        )
+    }
+    val matcher = remember(scriptIndex) { Matcher(scriptIndex) }
+    var followState by remember(matcher) { mutableStateOf(matcher.state) }
+    var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val density = LocalDensity.current
 
     val scrollState = rememberScrollState()
     var playing by remember { mutableStateOf(false) }
@@ -237,6 +274,14 @@ fun PrompterScreen(
         }
     }
 
+    fun restart() {
+        if (followVoice) {
+            matcher.reanchor(-1)
+            followState = matcher.state
+        }
+        scope.launch { scrollState.scrollTo(0) }
+    }
+
     fun togglePlay() {
         when {
             countdown > 0 -> {
@@ -244,8 +289,7 @@ fun PrompterScreen(
                 countdown = 0
             }
             playing -> playing = false
-            scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue ->
-                scope.launch { scrollState.scrollTo(0) }
+            scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue -> restart()
             else -> startCountdown()
         }
     }
@@ -257,7 +301,7 @@ fun PrompterScreen(
         when (action) {
             PrompterAction.NONE -> Unit
             PrompterAction.PLAY_PAUSE -> togglePlay()
-            PrompterAction.RESTART -> scope.launch { scrollState.scrollTo(0) }
+            PrompterAction.RESTART -> restart()
             PrompterAction.JUMP_BACK -> scope.launch { scrollState.scrollBy(-jumpPx()) }
             PrompterAction.JUMP_FORWARD -> scope.launch { scrollState.scrollBy(jumpPx()) }
             PrompterAction.SPEED_UP -> adjustWpm(10)
@@ -291,6 +335,23 @@ fun PrompterScreen(
         onDispose { engine?.stop() }
     }
     val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
+    val followActive = followVoice && engine != null
+
+    // Feed the matcher only while delivering; speech during pause is skipped,
+    // not matched, so resuming never replays a backlog.
+    LaunchedEffect(engine, matcher) {
+        engine?.events?.collect { event ->
+            if (followVoice && playing) {
+                followState = matcher.onWords(
+                    event.utterance,
+                    event.words,
+                    final = event is AsrEvent.Final,
+                )
+            } else {
+                matcher.skip(event.utterance, event.words)
+            }
+        }
+    }
 
     DisposableEffect(Unit) {
         KeyCommandBus.active = true
@@ -307,15 +368,41 @@ fun PrompterScreen(
         snapshotFlow { fontSp }.drop(1).debounce(600).collect { settingsRepo.setFontSizeSp(it) }
     }
 
-    LaunchedEffect(playing) {
+    // Scroll drive: voice-follow moves toward the anchor line (critically
+    // damped, plus rate feed-forward so motion glides between matches);
+    // classic mode keeps the fixed WPM drive. SPEC §3.1/§5.1: glide, never jump.
+    LaunchedEffect(playing, followActive) {
         if (!playing) return@LaunchedEffect
         var last = withFrameNanos { it }
         while (playing) {
             val now = withFrameNanos { it }
-            val dt = (now - last) / 1_000_000_000f
+            val dt = ((now - last) / 1_000_000_000f).coerceIn(0f, 0.1f)
             last = now
-            if (pxPerSec > 0f) scrollState.scrollBy(dt * pxPerSec)
-            if (scrollState.value >= scrollState.maxValue) playing = false
+            if (followActive) {
+                val layout = textLayout
+                val st = followState
+                if (layout != null && st.anchor >= 0) {
+                    val offset = (st.anchorCharEnd - 1).coerceIn(0, layout.layoutInput.text.length)
+                    val target = layout.getLineTop(layout.getLineForOffset(offset))
+                    val value = scrollState.value.toFloat()
+                    val approach = (target - value) * (1f - exp(-dt / 0.35f))
+                    val feedForward = if (st.mode == FollowMode.FOLLOWING &&
+                        scriptIndex.tokens.isNotEmpty() && contentHeightPx > 0
+                    ) {
+                        st.tokensPerSec * (contentHeightPx.toFloat() / scriptIndex.tokens.size) * dt
+                    } else {
+                        0f
+                    }
+                    val maxLead = with(density) { (fontSp * 1.4f).sp.toPx() }
+                    val next = (value + approach + feedForward)
+                        .coerceAtMost(target + maxLead)
+                        .coerceIn(0f, scrollState.maxValue.toFloat())
+                    scrollState.scrollBy(next - value)
+                }
+            } else {
+                if (pxPerSec > 0f) scrollState.scrollBy(dt * pxPerSec)
+                if (scrollState.value >= scrollState.maxValue) playing = false
+            }
         }
     }
 
@@ -384,6 +471,7 @@ fun PrompterScreen(
                     fontSize = fontSp.sp,
                     lineHeight = (fontSp * 1.4f).sp,
                     fontWeight = FontWeight.Medium,
+                    onTextLayout = { textLayout = it },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 28.dp)
@@ -392,6 +480,9 @@ fun PrompterScreen(
                 Spacer(Modifier.height(bottomSpacer))
             }
 
+            // Follow-state feedback (SPEC §5.1): the eyeline marker dims while
+            // frozen on improv, and comes back when the reading rejoins.
+            val frozen = followActive && followState.mode == FollowMode.FROZEN
             Canvas(Modifier.fillMaxSize()) {
                 val y = size.height * EYELINE_FRACTION
                 drawLine(
@@ -408,7 +499,11 @@ fun PrompterScreen(
                     lineTo(0f, y + h / 2)
                     close()
                 }
-                drawPath(marker, color = Color(0xFFFFC24B), alpha = 0.9f)
+                drawPath(
+                    marker,
+                    color = if (frozen) Color(0xFF8F8F8F) else Color(0xFFFFC24B),
+                    alpha = if (frozen) 0.5f else 0.9f,
+                )
             }
         }
 
@@ -424,9 +519,14 @@ fun PrompterScreen(
             )
         }
 
-        val remainingSec =
-            if (pxPerSec > 0f) ((scrollState.maxValue - scrollState.value) / pxPerSec).roundToInt()
-            else 0
+        // Remaining time from measured live rate when following, else from WPM.
+        val remainingSec = when {
+            followActive && followState.anchor >= 0 ->
+                ((scriptIndex.tokens.size - 1 - followState.anchor) /
+                    followState.tokensPerSec.coerceAtLeast(0.3f)).roundToInt()
+            pxPerSec > 0f -> ((scrollState.maxValue - scrollState.value) / pxPerSec).roundToInt()
+            else -> 0
+        }
         if (playing) {
             Text(
                 formatTime(remainingSec),
@@ -441,8 +541,13 @@ fun PrompterScreen(
         if (engine != null) {
             val statusText = when {
                 asrState.error != null -> asrState.error
-                asrState.listening -> "listening · ${asrState.decodeMs} ms"
-                else -> "starting…"
+                !asrState.listening -> "starting…"
+                followActive && followState.mode == FollowMode.FROZEN -> "improv · holding"
+                followActive && followState.anchor >= 0 ->
+                    "following · ${followState.anchor + 1}/${scriptIndex.tokens.size}" +
+                        " · ${asrState.decodeMs} ms"
+                followActive -> "waiting for your voice · ${asrState.decodeMs} ms"
+                else -> "listening · ${asrState.decodeMs} ms"
             }
             Column(
                 Modifier
@@ -459,7 +564,7 @@ fun PrompterScreen(
                     style = MaterialTheme.typography.labelSmall,
                 )
                 val line = asrState.partial.ifBlank { asrState.lastFinal }
-                if (line.isNotBlank()) {
+                if (asrOverlayOn && line.isNotBlank()) {
                     Text(
                         line.takeLast(120),
                         color = Color.White.copy(
@@ -526,8 +631,19 @@ fun PrompterScreen(
                     countdownSec = COUNTDOWN_CYCLE[(idx + 1).mod(COUNTDOWN_CYCLE.size)]
                     scope.launch { settingsRepo.setCountdownSec(countdownSec) }
                 },
+                followAvailable = preferredModel != null,
+                followVoice = followVoice,
+                onFollowVoice = { on ->
+                    followVoice = on
+                    if (on) {
+                        if (asrModel == null) asrModel = preferredModel
+                    } else if (!asrOverlayOn) {
+                        asrModel = null
+                    }
+                    scope.launch { settingsRepo.setFollowVoice(on) }
+                },
                 onPlay = ::togglePlay,
-                onRestart = { scope.launch { scrollState.scrollTo(0) } },
+                onRestart = ::restart,
                 onExit = onExit,
             )
         }
@@ -549,6 +665,9 @@ private fun ControlsPanel(
     onMirrorV: (Boolean) -> Unit,
     countdownSec: Int,
     onCountdownCycle: () -> Unit,
+    followAvailable: Boolean,
+    followVoice: Boolean,
+    onFollowVoice: (Boolean) -> Unit,
     onPlay: () -> Unit,
     onRestart: () -> Unit,
     onExit: () -> Unit,
@@ -611,7 +730,14 @@ private fun ControlsPanel(
                 onValueChange = onFontChange,
                 valueRange = 24f..72f,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (followAvailable) {
+                    FilterChip(
+                        selected = followVoice,
+                        onClick = { onFollowVoice(!followVoice) },
+                        label = { Text("Follow voice") },
+                    )
+                }
                 FilterChip(
                     selected = mirrorH,
                     onClick = { onMirrorH(!mirrorH) },
