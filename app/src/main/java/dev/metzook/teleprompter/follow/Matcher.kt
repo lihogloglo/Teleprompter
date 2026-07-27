@@ -10,6 +10,13 @@ enum class FollowMode {
 
     /** Sustained off-script speech: hold position until a rejoin run lands. */
     FROZEN,
+
+    /**
+     * Frozen for a long time: the anchor is stale, so the rejoin search widens
+     * to the whole script — reading any line aloud recovers, as do the jump
+     * keys. UI pulses the marker.
+     */
+    LOST,
 }
 
 data class FollowState(
@@ -52,6 +59,8 @@ data class MatcherConfig(
      */
     val freezeWindow: Int = 12,
     val freezeUnmatched: Int = 10,
+    /** Unmatched tokens while frozen before escalating to LOST (whole-script rejoin). */
+    val lostAfterUnmatched: Int = 20,
     /** Rate EMA weight and clamps (tokens/sec). */
     val rateAlpha: Float = 0.3f,
     val minRate: Float = 0.3f,
@@ -98,6 +107,9 @@ class Matcher(
     // Rejoin run tracker: script position → length of the consecutive run ending there.
     private var runs = HashMap<Int, Int>()
     private var runsCarriedOver = false
+
+    // Unmatched tokens since the freeze began; escalates FROZEN → LOST.
+    private var frozenMisses = 0
 
     /**
      * Feed one ASR partial (the utterance's words so far). Growing partials are
@@ -169,6 +181,7 @@ class Matcher(
         runs.clear()
         runsCarriedOver = false
         outcomes.clear()
+        frozenMisses = 0
         lastMatchTime = -1f
         lastMatchUtterance = -1
         lastMatchAnchor = idx
@@ -183,14 +196,23 @@ class Matcher(
 
     private fun processToken(norm: String, t: Float, utterance: Int) {
         val anchor = state.anchor
-        val frozen = state.mode == FollowMode.FROZEN
+        val frozen = state.mode != FollowMode.FOLLOWING
 
         // Always feed the run tracker; while frozen it is the only way back.
         val runTarget = updateRuns(norm, anchor, anyPosition = frozen)
 
         if (frozen) {
-            if (runTarget >= 0) applyMatch(runTarget, t, utterance, jump = true)
-            else recordOutcome(false)
+            if (runTarget >= 0) {
+                applyMatch(runTarget, t, utterance, jump = true)
+            } else {
+                recordOutcome(false)
+                frozenMisses++
+                if (state.mode == FollowMode.FROZEN &&
+                    frozenMisses >= config.lostAfterUnmatched
+                ) {
+                    state = state.copy(mode = FollowMode.LOST)
+                }
+            }
             return
         }
 
@@ -239,6 +261,7 @@ class Matcher(
         lastMatchTime = t
         lastMatchUtterance = utterance
         lastMatchAnchor = target
+        frozenMisses = 0
         if (jump) outcomes.clear()
         recordOutcome(true)
         state = FollowState(
@@ -262,8 +285,10 @@ class Matcher(
      * within a couple of words of continued reading.
      */
     private fun updateRuns(norm: String, anchor: Int, anyPosition: Boolean): Int {
-        val lo = max(0, anchor - config.rejoinBack)
-        val hi = min(tokens.size - 1, anchor + config.rejoinForward)
+        // Lost = the anchor means nothing anymore: search the whole script.
+        val lost = state.mode == FollowMode.LOST
+        val lo = if (lost) 0 else max(0, anchor - config.rejoinBack)
+        val hi = if (lost) tokens.size - 1 else min(tokens.size - 1, anchor + config.rejoinForward)
 
         val candidates = HashSet<Int>()
         index.positionsByNorm[norm]?.forEach { if (it in lo..hi) candidates += it }
@@ -323,9 +348,11 @@ class Matcher(
     }
 
     private fun maybeFreeze() {
+        if (state.mode != FollowMode.FOLLOWING) return
         if (outcomes.size < config.freezeWindow) return
         val unmatched = outcomes.count { !it }
         if (unmatched >= config.freezeUnmatched) {
+            frozenMisses = 0
             state = state.copy(mode = FollowMode.FROZEN)
         }
     }

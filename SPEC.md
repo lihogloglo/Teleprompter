@@ -313,7 +313,15 @@ the anchor while frozen, and near the anchor need only 2 consecutive hits (far j
 skip window 8→10 but long skips must land on a content word (≥4 chars) so coincidental
 function words can't drag the anchor during improv; fuzzy 2-edit threshold at length ≥8.
 Replay tests cover 33% word loss, mid-gap resume on a content word, and rejoin with garbled
-words. **Next: re-validate on device, then rest of M4** (lost state, start-on-voice).
+words. **Validated on device — follow mode works well** (2026-07-27).
+**M4 complete** with the final slice: **start-on-voice** (countdown option "Voice": session
+arms, first matched words start the scroll — no touch, no timer; tap or "Start now" as manual
+outs) and the **lost state** (20+ unmatched tokens while frozen → marker pulses, rejoin search
+widens to the whole script, so reading any line recovers; jump keys/restart also rescue).
+**Next: M5** — session end-screen stats (duration, live WPM, freeze/retake count; feeds
+rehearsal mode + threshold tuning), then profiles, marker log, distance→size calculator
+(§6.1 rungs 1–2), MediaSession for AVRCP remotes. Battery/thermal over a 30+ min session
+still unmeasured (§9 risk).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*

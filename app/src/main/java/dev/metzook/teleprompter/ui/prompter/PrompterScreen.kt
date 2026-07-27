@@ -9,6 +9,11 @@ import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -132,7 +137,10 @@ private const val FOLLOW_LEAD_SEC = 0.45f
 private const val CATCH_UP_TAU = 0.20f
 private const val EASE_BACK_TAU = 0.50f
 
-private val COUNTDOWN_CYCLE = listOf(0, 1, 2, 3, 5)
+/** countdownSec sentinel: session starts when the reading voice is heard. */
+const val START_ON_VOICE = -1
+
+private val COUNTDOWN_CYCLE = listOf(0, 1, 2, 3, 5, START_ON_VOICE)
 
 @Composable
 fun PrompterScreen(
@@ -252,6 +260,9 @@ fun PrompterScreen(
 
     val scrollState = rememberScrollState()
     var playing by remember { mutableStateOf(false) }
+    // Start-on-voice: session armed, waiting for the first matched words.
+    var armed by remember { mutableStateOf(false) }
+    var armedAnchor by remember { mutableIntStateOf(-1) }
     var countdown by remember { mutableIntStateOf(0) }
     var countdownJob by remember { mutableStateOf<Job?>(null) }
     var contentHeightPx by remember { mutableIntStateOf(0) }
@@ -290,16 +301,20 @@ fun PrompterScreen(
     val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
     val followActive = followVoice && engine != null
 
-    // Feed the matcher only while delivering; speech during pause is skipped,
-    // not matched, so resuming never replays a backlog.
+    // Feed the matcher only while delivering (or armed, waiting for the first
+    // words); speech during pause is skipped, so resuming never replays a backlog.
     LaunchedEffect(engine, matcher) {
         engine?.events?.collect { event ->
-            if (followVoice && playing) {
+            if (followVoice && (playing || armed)) {
                 followState = matcher.onWords(
                     event.utterance,
                     event.words,
                     final = event is AsrEvent.Final,
                 )
+                if (armed && followState.anchor != armedAnchor) {
+                    armed = false
+                    playing = true
+                }
             } else {
                 matcher.skip(event.utterance, event.words)
             }
@@ -347,8 +362,16 @@ fun PrompterScreen(
                 countdownJob?.cancel()
                 countdown = 0
             }
+            armed -> armed = false
             playing -> playing = false
             scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue -> restart()
+            countdownSec == START_ON_VOICE ->
+                if (followActive) {
+                    armedAnchor = followState.anchor
+                    armed = true
+                } else {
+                    playing = true // no voice engine: start immediately
+                }
             else -> startCountdown()
         }
     }
@@ -525,8 +548,17 @@ fun PrompterScreen(
             }
 
             // Follow-state feedback (SPEC §5.1): the eyeline marker dims while
-            // frozen on improv, and comes back when the reading rejoins.
+            // frozen on improv, pulses when lost, and comes back on rejoin.
             val frozen = followActive && followState.mode == FollowMode.FROZEN
+            val lost = followActive && followState.mode == FollowMode.LOST
+            val markerAlpha = if (lost) {
+                rememberInfiniteTransition(label = "lost").animateFloat(
+                    initialValue = 0.25f,
+                    targetValue = 0.95f,
+                    animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
+                    label = "lostPulse",
+                ).value
+            } else if (frozen) 0.5f else 0.9f
             Canvas(Modifier.fillMaxSize()) {
                 val y = size.height * EYELINE_FRACTION
                 drawLine(
@@ -546,7 +578,7 @@ fun PrompterScreen(
                 drawPath(
                     marker,
                     color = if (frozen) Color(0xFF8F8F8F) else Color(0xFFFFC24B),
-                    alpha = if (frozen) 0.5f else 0.9f,
+                    alpha = markerAlpha,
                 )
             }
         }
@@ -589,6 +621,8 @@ fun PrompterScreen(
             val statusText = when {
                 asrState.error != null -> asrState.error
                 !asrState.listening -> "starting…"
+                followActive && followState.mode == FollowMode.LOST ->
+                    "lost · read any line, or use the remote"
                 followActive && followState.mode == FollowMode.FROZEN -> "improv · holding · $lang"
                 followActive && followState.anchor >= 0 ->
                     "following · $lang · ${followState.anchor + 1}/${scriptIndex.tokens.size}" +
@@ -646,8 +680,28 @@ fun PrompterScreen(
             }
         }
 
+        if (armed) {
+            Column(
+                Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    "Speak to start",
+                    color = Color.White.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                TextButton(onClick = {
+                    armed = false
+                    playing = true
+                }) {
+                    Text("Start now", color = Color.White.copy(alpha = 0.7f))
+                }
+            }
+        }
+
         AnimatedVisibility(
-            visible = !playing && countdown == 0,
+            visible = !playing && countdown == 0 && !armed,
             modifier = Modifier.align(Alignment.BottomCenter),
             enter = fadeIn() + slideInVertically { it / 2 },
             exit = fadeOut() + slideOutVertically { it / 2 },
@@ -796,10 +850,16 @@ private fun ControlsPanel(
                     label = { Text("Mirror ↕") },
                 )
                 FilterChip(
-                    selected = countdownSec > 0,
+                    selected = countdownSec != 0,
                     onClick = onCountdownCycle,
                     label = {
-                        Text(if (countdownSec == 0) "Countdown off" else "Countdown $countdownSec s")
+                        Text(
+                            when (countdownSec) {
+                                0 -> "Countdown off"
+                                START_ON_VOICE -> "Start on voice"
+                                else -> "Countdown $countdownSec s"
+                            },
+                        )
                     },
                 )
             }

@@ -48,9 +48,10 @@ import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
 import dev.metzook.teleprompter.settings.PrompterSettings
 import dev.metzook.teleprompter.settings.SettingsRepository
+import dev.metzook.teleprompter.ui.prompter.START_ON_VOICE
 import kotlinx.coroutines.launch
 
-private val COUNTDOWN_CHOICES = listOf(0, 1, 2, 3, 5)
+private val COUNTDOWN_CHOICES = listOf(0, 1, 2, 3, 5, START_ON_VOICE)
 
 @Composable
 fun SettingsScreen(
@@ -116,15 +117,24 @@ fun SettingsScreen(
                     FilterChip(
                         selected = settings.countdownSec == sec,
                         onClick = { scope.launch { settingsRepo.setCountdownSec(sec) } },
-                        label = { Text(if (sec == 0) "Off" else "$sec s") },
+                        label = {
+                            Text(
+                                when (sec) {
+                                    0 -> "Off"
+                                    START_ON_VOICE -> "Voice"
+                                    else -> "$sec s"
+                                },
+                            )
+                        },
                     )
                 }
             }
 
-            SectionHeader("Voice — preview")
+            SectionHeader("Voice")
             Text(
-                "Download a speech model to see live on-device transcription in the prompter. " +
-                    "Audio never leaves the phone. This becomes voice-following in the next milestone.",
+                "Download a speech model to enable voice-following (the \"Follow voice\" chip " +
+                    "in the prompter). The model is auto-picked per script from its language; " +
+                    "this is the fallback. Audio never leaves the phone.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

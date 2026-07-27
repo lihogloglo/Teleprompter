@@ -238,6 +238,31 @@ class MatcherReplayTest {
     }
 
     @Test
+    fun `long improv escalates to lost and whole-script rejoin recovers`() {
+        // Tiny rejoin window: para3 is unreachable while merely FROZEN,
+        // so recovery proves LOST widens the search to the whole script.
+        val m = Matcher(
+            Replay.indexOf(script),
+            MatcherConfig(rejoinBack = 5, rejoinForward = 5),
+        )
+        Replay.feed(m, para1)
+        Replay.feedUtterance(
+            m,
+            1,
+            Replay.wordsOf(
+                "let me tell you about something completely unrelated because yesterday " +
+                    "my neighbor decided to repaint his fence bright orange and honestly " +
+                    "everyone came outside to watch him argue with his ladder for twenty minutes",
+            ),
+        )
+        assertEquals(FollowMode.LOST, m.state.mode)
+
+        val state = Replay.feedUtterance(m, 2, Replay.wordsOf(para3))
+        assertEquals(FollowMode.FOLLOWING, state.mode)
+        assertEquals(52, state.anchor)
+    }
+
+    @Test
     fun `manual reanchor resets cleanly`() {
         val m = matcher()
         Replay.feed(m, para1, para2)
