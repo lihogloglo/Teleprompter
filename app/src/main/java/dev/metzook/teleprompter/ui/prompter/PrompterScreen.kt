@@ -5,6 +5,7 @@ package dev.metzook.teleprompter.ui.prompter
 import android.Manifest
 import android.content.pm.PackageManager
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -100,8 +101,11 @@ import dev.metzook.teleprompter.asr.ModelManager
 import dev.metzook.teleprompter.follow.FollowMode
 import dev.metzook.teleprompter.follow.LangDetect
 import dev.metzook.teleprompter.follow.MatchLang
+import dev.metzook.teleprompter.follow.FollowState
 import dev.metzook.teleprompter.follow.Matcher
 import dev.metzook.teleprompter.follow.ScriptIndex
+import dev.metzook.teleprompter.follow.SessionStats
+import dev.metzook.teleprompter.follow.SessionStatsBuilder
 import dev.metzook.teleprompter.follow.SpokenSegment
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
@@ -110,6 +114,7 @@ import dev.metzook.teleprompter.vault.MarkdownParser
 import dev.metzook.teleprompter.vault.ParsedScript
 import dev.metzook.teleprompter.vault.Script
 import dev.metzook.teleprompter.vault.ScriptRepository
+import dev.metzook.teleprompter.vault.sections
 import dev.metzook.teleprompter.vault.toDisplaySegments
 import kotlin.math.exp
 import kotlin.math.roundToInt
@@ -258,6 +263,22 @@ fun PrompterScreen(
     var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val density = LocalDensity.current
 
+    // Session stats (SPEC §5.2.4): fed from matcher state changes + play/pause.
+    val statsBuilder = remember(matcher) {
+        SessionStatsBuilder(
+            totalTokens = scriptIndex.tokens.size,
+            sectionStarts = parsedScript.sections().map {
+                it.title to scriptIndex.firstTokenAtOrAfter(it.charStart)
+            },
+        )
+    }
+    var summaryStats by remember(matcher) { mutableStateOf<SessionStats?>(null) }
+
+    fun publishState(state: FollowState) {
+        followState = state
+        statsBuilder.onState(state, System.currentTimeMillis())
+    }
+
     val scrollState = rememberScrollState()
     var playing by remember { mutableStateOf(false) }
     // Start-on-voice: session armed, waiting for the first matched words.
@@ -306,10 +327,12 @@ fun PrompterScreen(
     LaunchedEffect(engine, matcher) {
         engine?.events?.collect { event ->
             if (followVoice && (playing || armed)) {
-                followState = matcher.onWords(
-                    event.utterance,
-                    event.words,
-                    final = event is AsrEvent.Final,
+                publishState(
+                    matcher.onWords(
+                        event.utterance,
+                        event.words,
+                        final = event is AsrEvent.Final,
+                    ),
                 )
                 if (armed && followState.anchor != armedAnchor) {
                     armed = false
@@ -319,6 +342,11 @@ fun PrompterScreen(
                 matcher.skip(event.utterance, event.words)
             }
         }
+    }
+
+    LaunchedEffect(playing) {
+        val now = System.currentTimeMillis()
+        if (playing) statsBuilder.onPlay(now) else statsBuilder.onPause(now)
     }
 
     fun adjustWpm(delta: Int) {
@@ -351,7 +379,7 @@ fun PrompterScreen(
     fun restart() {
         if (followVoice) {
             matcher.reanchor(-1)
-            followState = matcher.state
+            publishState(matcher.state)
         }
         scope.launch { scrollState.scrollTo(0) }
     }
@@ -384,7 +412,7 @@ fun PrompterScreen(
     // principle 2: never touch mid-take). The scroll then glides to the anchor.
     fun reanchorTo(anchor: Int) {
         matcher.reanchor(anchor)
-        followState = matcher.state
+        publishState(matcher.state)
     }
 
     fun perform(action: PrompterAction) {
@@ -404,6 +432,19 @@ fun PrompterScreen(
             PrompterAction.FONT_DOWN -> adjustFont(-2f)
         }
     }
+
+    // Leaving after a real take shows the end screen first (SPEC §5.2.4).
+    fun requestExit() {
+        val now = System.currentTimeMillis()
+        if (summaryStats == null && followActive && statsBuilder.meaningful(now)) {
+            playing = false
+            armed = false
+            summaryStats = statsBuilder.build(now)
+        } else {
+            onExit()
+        }
+    }
+    BackHandler { requestExit() }
 
     DisposableEffect(Unit) {
         KeyCommandBus.active = true
@@ -745,6 +786,14 @@ fun PrompterScreen(
                 },
                 onPlay = ::togglePlay,
                 onRestart = ::restart,
+                onExit = ::requestExit,
+            )
+        }
+
+        summaryStats?.let { stats ->
+            SessionSummary(
+                stats = stats,
+                onDismiss = { summaryStats = null },
                 onExit = onExit,
             )
         }

@@ -318,8 +318,14 @@ words. **Validated on device — follow mode works well** (2026-07-27).
 arms, first matched words start the scroll — no touch, no timer; tap or "Start now" as manual
 outs) and the **lost state** (20+ unmatched tokens while frozen → marker pulses, rejoin search
 widens to the whole script, so reading any line recovers; jump keys/restart also rescue).
-**Next: M5** — session end-screen stats (duration, live WPM, freeze/retake count; feeds
-rehearsal mode + threshold tuning), then profiles, marker log, distance→size calculator
+**M5 slice 1 — session end screen** (2026-07-27): pure-Kotlin `SessionStatsBuilder` (fed
+matcher state snapshots + play/pause; word counting from anchor deltas — 1–12 = speech,
+bigger = jump, −4 or more = retake) collects active time, words read, avg live WPM, progress,
+freeze/lost/retake counts, per-section time+WPM (sections from headings via
+`ParsedScript.sections()`), and a timestamped event list (feeds rehearsal heatmap + marker log
+later). Exit/back after a ≥10 s take shows the summary overlay first ("Back to script" /
+"Done"); follow-mode sessions only.
+**Next in M5**: appearance profiles, marker-log file export, distance→size calculator
 (§6.1 rungs 1–2), MediaSession for AVRCP remotes. Battery/thermal over a 30+ min session
 still unmeasured (§9 risk).
 

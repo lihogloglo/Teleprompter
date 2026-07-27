@@ -50,6 +50,17 @@ class ScriptIndex(
     fun paragraphForwardAnchor(anchor: Int): Int =
         paragraphStarts.firstOrNull { it > anchor + 1 }?.let { it - 1 } ?: anchor
 
+    /** Index of the first token at or after a display-text char offset. */
+    fun firstTokenAtOrAfter(charOffset: Int): Int {
+        var lo = 0
+        var hi = tokens.size
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if (tokens[mid].charStart < charOffset) lo = mid + 1 else hi = mid
+        }
+        return lo.coerceIn(0, (tokens.size - 1).coerceAtLeast(0))
+    }
+
     companion object {
         private val WORD = Regex("\\S+")
 
