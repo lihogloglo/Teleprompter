@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <!-- Teleprompter logo: eyeline/play marker pointing at the active script line -->
+  <rect x="0" y="0" width="108" height="108" rx="24" fill="#121212"/>
+  <path d="M28,45 L28,63 L43,54 Z" fill="#FFC24B"/>
+  <path d="M50.5,37.5 h21 a3.5,3.5 0 0 1 0,7 h-21 a3.5,3.5 0 0 1 0,-7 z" fill="#FFFFFF" fill-opacity="0.95"/>
+  <path d="M50.5,50.5 h26 a3.5,3.5 0 0 1 0,7 h-26 a3.5,3.5 0 0 1 0,-7 z" fill="#FFC24B"/>
+  <path d="M50.5,63.5 h17 a3.5,3.5 0 0 1 0,7 h-17 a3.5,3.5 0 0 1 0,-7 z" fill="#FFFFFF" fill-opacity="0.55"/>
+</svg>
