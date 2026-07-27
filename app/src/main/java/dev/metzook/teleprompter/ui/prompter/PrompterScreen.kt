@@ -1,0 +1,564 @@
+@file:OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+
+package dev.metzook.teleprompter.ui.prompter
+
+import android.view.WindowManager
+import androidx.activity.compose.LocalActivity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import dev.metzook.teleprompter.VolumeKeyBus
+import dev.metzook.teleprompter.settings.GestureSlot
+import dev.metzook.teleprompter.settings.PrompterAction
+import dev.metzook.teleprompter.settings.SettingsRepository
+import dev.metzook.teleprompter.vault.MarkdownParser
+import dev.metzook.teleprompter.vault.ParsedScript
+import dev.metzook.teleprompter.vault.Script
+import dev.metzook.teleprompter.vault.ScriptRepository
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** Reading band position: the eyeline sits in the upper third (SPEC §5.1). */
+private const val EYELINE_FRACTION = 0.30f
+
+private val COUNTDOWN_CYCLE = listOf(0, 1, 2, 3, 5)
+
+@Composable
+fun PrompterScreen(
+    repo: ScriptRepository,
+    settingsRepo: SettingsRepository,
+    scriptId: String,
+    onExit: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val activity = LocalActivity.current
+    val view = LocalView.current
+
+    var script by remember { mutableStateOf<Script?>(null) }
+    var parsed by remember { mutableStateOf<ParsedScript?>(null) }
+    var ready by remember { mutableStateOf(false) }
+    var wpm by remember { mutableIntStateOf(140) }
+    var fontSp by remember { mutableFloatStateOf(40f) }
+    var mirrorH by remember { mutableStateOf(false) }
+    var mirrorV by remember { mutableStateOf(false) }
+    var countdownSec by remember { mutableIntStateOf(3) }
+    var pinchEnabled by remember { mutableStateOf(true) }
+    var gestureMap by remember {
+        mutableStateOf(GestureSlot.entries.associateWith { it.default })
+    }
+    // Frontmatter overrides make a value session-only: don't write it back to defaults.
+    var persistWpm by remember { mutableStateOf(true) }
+    var persistFont by remember { mutableStateOf(true) }
+
+    LaunchedEffect(scriptId) {
+        val s = settingsRepo.settings.first()
+        gestureMap = s.gestures
+        pinchEnabled = s.pinchResize
+        countdownSec = s.countdownSec
+        val loadedScript = withContext(Dispatchers.IO) { repo.load(scriptId) }
+        if (loadedScript != null) {
+            val p = withContext(Dispatchers.Default) { MarkdownParser.parse(loadedScript.body) }
+            wpm = p.overrides.wpm ?: s.wpm
+            persistWpm = p.overrides.wpm == null
+            fontSp = (s.fontSizeSp * (p.overrides.fontScale ?: 1f)).coerceIn(24f, 72f)
+            persistFont = p.overrides.fontScale == null
+            mirrorH = p.overrides.mirror ?: s.mirrorH
+            mirrorV = s.mirrorV
+            parsed = p
+            script = loadedScript
+        }
+        ready = true
+    }
+
+    // Keep the screen awake and immersive for the whole session.
+    DisposableEffect(activity) {
+        val window = activity?.window
+        var insets: WindowInsetsControllerCompat? = null
+        if (window != null) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            insets = WindowInsetsControllerCompat(window, view).apply {
+                systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hide(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            insets?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    if (!ready) {
+        Box(Modifier.fillMaxSize().background(Color.Black))
+        return
+    }
+    val loaded = script
+    val parsedScript = parsed
+    if (loaded == null || parsedScript == null) {
+        LaunchedEffect(Unit) { onExit() }
+        return
+    }
+
+    val annotated = remember(parsedScript) { parsedScript.toAnnotatedString() }
+    val wordCount = remember(parsedScript) { parsedScript.spokenWordCount.coerceAtLeast(1) }
+
+    val scrollState = rememberScrollState()
+    var playing by remember { mutableStateOf(false) }
+    var countdown by remember { mutableIntStateOf(0) }
+    var countdownJob by remember { mutableStateOf<Job?>(null) }
+    var contentHeightPx by remember { mutableIntStateOf(0) }
+    var viewportPx by remember { mutableIntStateOf(0) }
+
+    // WPM → px/s once the text is laid out: px-per-word is total text height / word count.
+    val pxPerSec by remember(wordCount) {
+        derivedStateOf {
+            if (contentHeightPx == 0) 0f else (wpm / 60f) * (contentHeightPx.toFloat() / wordCount)
+        }
+    }
+
+    fun adjustWpm(delta: Int) {
+        wpm = (wpm + delta).coerceIn(40, 400)
+        if (persistWpm) scope.launch { settingsRepo.setWpm(wpm) }
+    }
+
+    fun adjustFont(delta: Float) {
+        fontSp = (fontSp + delta).coerceIn(24f, 72f)
+    }
+
+    fun startCountdown() {
+        if (countdownSec > 0) {
+            countdownJob = scope.launch {
+                try {
+                    for (i in countdownSec downTo 1) {
+                        countdown = i
+                        delay(1000L)
+                    }
+                    playing = true
+                } finally {
+                    countdown = 0
+                }
+            }
+        } else {
+            playing = true
+        }
+    }
+
+    fun togglePlay() {
+        when {
+            countdown > 0 -> {
+                countdownJob?.cancel()
+                countdown = 0
+            }
+            playing -> playing = false
+            scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue ->
+                scope.launch { scrollState.scrollTo(0) }
+            else -> startCountdown()
+        }
+    }
+
+    fun jumpPx(): Float =
+        if (pxPerSec > 0f) pxPerSec * 5f else viewportPx * 0.3f
+
+    fun perform(action: PrompterAction) {
+        when (action) {
+            PrompterAction.NONE -> Unit
+            PrompterAction.PLAY_PAUSE -> togglePlay()
+            PrompterAction.RESTART -> scope.launch { scrollState.scrollTo(0) }
+            PrompterAction.JUMP_BACK -> scope.launch { scrollState.scrollBy(-jumpPx()) }
+            PrompterAction.JUMP_FORWARD -> scope.launch { scrollState.scrollBy(jumpPx()) }
+            PrompterAction.SPEED_UP -> adjustWpm(10)
+            PrompterAction.SPEED_DOWN -> adjustWpm(-10)
+            PrompterAction.FONT_UP -> adjustFont(2f)
+            PrompterAction.FONT_DOWN -> adjustFont(-2f)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        VolumeKeyBus.active = true
+        onDispose { VolumeKeyBus.active = false }
+    }
+    LaunchedEffect(Unit) {
+        VolumeKeyBus.events.collect { dir ->
+            val slot = if (dir > 0) GestureSlot.VOLUME_UP else GestureSlot.VOLUME_DOWN
+            perform(gestureMap[slot] ?: slot.default)
+        }
+    }
+    // Pinch-resize persists debounced, and only when not overridden by frontmatter.
+    LaunchedEffect(persistFont) {
+        if (!persistFont) return@LaunchedEffect
+        snapshotFlow { fontSp }.drop(1).debounce(600).collect { settingsRepo.setFontSizeSp(it) }
+    }
+
+    LaunchedEffect(playing) {
+        if (!playing) return@LaunchedEffect
+        var last = withFrameNanos { it }
+        while (playing) {
+            val now = withFrameNanos { it }
+            val dt = (now - last) / 1_000_000_000f
+            last = now
+            if (pxPerSec > 0f) scrollState.scrollBy(dt * pxPerSec)
+            if (scrollState.value >= scrollState.maxValue) playing = false
+        }
+    }
+
+    val doubleTapAction = gestureMap[GestureSlot.DOUBLE_TAP] ?: PrompterAction.NONE
+    val longPressAction = gestureMap[GestureSlot.LONG_PRESS] ?: PrompterAction.NONE
+
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .onSizeChanged { viewportPx = it.height }
+            .pointerInput(doubleTapAction, longPressAction) {
+                detectTapGestures(
+                    onTap = { togglePlay() },
+                    onDoubleTap =
+                        if (doubleTapAction != PrompterAction.NONE) {
+                            { perform(doubleTapAction) }
+                        } else null,
+                    onLongPress =
+                        if (longPressAction != PrompterAction.NONE) {
+                            { perform(longPressAction) }
+                        } else null,
+                )
+            }
+            .pointerInput(pinchEnabled) {
+                if (!pinchEnabled) return@pointerInput
+                // Pinch-only: never consumes single-finger events, so manual
+                // scrolling keeps working (detectTransformGestures would eat it).
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.none { it.pressed }) break
+                        if (event.changes.size >= 2) {
+                            val zoom = event.calculateZoom()
+                            if (zoom != 1f) {
+                                fontSp = (fontSp * zoom).coerceIn(24f, 72f)
+                                event.changes.forEach { it.consume() }
+                            }
+                        }
+                    }
+                }
+            },
+    ) {
+        val topSpacer = maxHeight * EYELINE_FRACTION
+        val bottomSpacer = maxHeight * (1f - EYELINE_FRACTION)
+
+        // Everything a physical rig would mirror lives inside this layer.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = if (mirrorH) -1f else 1f
+                    scaleY = if (mirrorV) -1f else 1f
+                },
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState),
+            ) {
+                Spacer(Modifier.height(topSpacer))
+                Text(
+                    text = annotated,
+                    color = Color.White,
+                    fontSize = fontSp.sp,
+                    lineHeight = (fontSp * 1.4f).sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp)
+                        .onSizeChanged { contentHeightPx = it.height },
+                )
+                Spacer(Modifier.height(bottomSpacer))
+            }
+
+            Canvas(Modifier.fillMaxSize()) {
+                val y = size.height * EYELINE_FRACTION
+                drawLine(
+                    color = Color.White.copy(alpha = 0.06f),
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 2.dp.toPx(),
+                )
+                val h = 14.dp.toPx()
+                val w = 10.dp.toPx()
+                val marker = Path().apply {
+                    moveTo(0f, y - h / 2)
+                    lineTo(w, y)
+                    lineTo(0f, y + h / 2)
+                    close()
+                }
+                drawPath(marker, color = Color(0xFFFFC24B), alpha = 0.9f)
+            }
+        }
+
+        val progress =
+            if (scrollState.maxValue > 0) scrollState.value.toFloat() / scrollState.maxValue else 0f
+        if (progress > 0f) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .fillMaxHeight(progress)
+                    .width(3.dp)
+                    .background(Color.White.copy(alpha = 0.25f)),
+            )
+        }
+
+        val remainingSec =
+            if (pxPerSec > 0f) ((scrollState.maxValue - scrollState.value) / pxPerSec).roundToInt()
+            else 0
+        if (playing) {
+            Text(
+                formatTime(remainingSec),
+                color = Color.White.copy(alpha = 0.35f),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp),
+            )
+        }
+
+        if (countdown > 0) {
+            Column(
+                Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    "$countdown",
+                    color = Color.White,
+                    fontSize = 96.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                TextButton(onClick = {
+                    countdownJob?.cancel()
+                    countdown = 0
+                    playing = true
+                }) {
+                    Text("Start now", color = Color.White.copy(alpha = 0.7f))
+                }
+            }
+        }
+
+        AnimatedVisibility(
+            visible = !playing && countdown == 0,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut() + slideOutVertically { it / 2 },
+        ) {
+            ControlsPanel(
+                title = loaded.title,
+                subtitle = "≈ ${formatTime(remainingSec)} left · $wordCount words · $wpm wpm",
+                wpm = wpm,
+                onWpmChange = { wpm = it },
+                onWpmChangeFinished = {
+                    if (persistWpm) scope.launch { settingsRepo.setWpm(wpm) }
+                },
+                fontSp = fontSp,
+                onFontChange = { fontSp = it },
+                mirrorH = mirrorH,
+                onMirrorH = {
+                    mirrorH = it
+                    scope.launch { settingsRepo.setMirrorH(it) }
+                },
+                mirrorV = mirrorV,
+                onMirrorV = {
+                    mirrorV = it
+                    scope.launch { settingsRepo.setMirrorV(it) }
+                },
+                countdownSec = countdownSec,
+                onCountdownCycle = {
+                    val idx = COUNTDOWN_CYCLE.indexOf(countdownSec)
+                    countdownSec = COUNTDOWN_CYCLE[(idx + 1).mod(COUNTDOWN_CYCLE.size)]
+                    scope.launch { settingsRepo.setCountdownSec(countdownSec) }
+                },
+                onPlay = ::togglePlay,
+                onRestart = { scope.launch { scrollState.scrollTo(0) } },
+                onExit = onExit,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ControlsPanel(
+    title: String,
+    subtitle: String,
+    wpm: Int,
+    onWpmChange: (Int) -> Unit,
+    onWpmChangeFinished: () -> Unit,
+    fontSp: Float,
+    onFontChange: (Float) -> Unit,
+    mirrorH: Boolean,
+    onMirrorH: (Boolean) -> Unit,
+    mirrorV: Boolean,
+    onMirrorV: (Boolean) -> Unit,
+    countdownSec: Int,
+    onCountdownCycle: () -> Unit,
+    onPlay: () -> Unit,
+    onRestart: () -> Unit,
+    onExit: () -> Unit,
+) {
+    Surface(
+        color = Color(0xF2161616),
+        contentColor = Color.White,
+        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            // Swallow taps so touching the panel doesn't start playback.
+            .pointerInput(Unit) { detectTapGestures { } },
+    ) {
+        Column(
+            Modifier
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .navigationBarsPadding(),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.6f),
+                    )
+                }
+                IconButton(onClick = onRestart) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Restart")
+                }
+                FilledIconButton(onClick = onPlay, modifier = Modifier.size(56.dp)) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = "Play",
+                        modifier = Modifier.size(32.dp),
+                    )
+                }
+                IconButton(onClick = onExit) {
+                    Icon(Icons.Default.Close, contentDescription = "Exit")
+                }
+            }
+            Text("Speed — $wpm wpm", style = MaterialTheme.typography.labelMedium)
+            Slider(
+                value = wpm.toFloat(),
+                onValueChange = { onWpmChange(it.roundToInt()) },
+                onValueChangeFinished = onWpmChangeFinished,
+                valueRange = 40f..400f,
+            )
+            Text(
+                "Text size — ${fontSp.roundToInt()} sp (pinch the text to adjust)",
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Slider(
+                value = fontSp,
+                onValueChange = onFontChange,
+                valueRange = 24f..72f,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = mirrorH,
+                    onClick = { onMirrorH(!mirrorH) },
+                    label = { Text("Mirror ↔") },
+                )
+                FilterChip(
+                    selected = mirrorV,
+                    onClick = { onMirrorV(!mirrorV) },
+                    label = { Text("Mirror ↕") },
+                )
+                FilterChip(
+                    selected = countdownSec > 0,
+                    onClick = onCountdownCycle,
+                    label = {
+                        Text(if (countdownSec == 0) "Countdown off" else "Countdown $countdownSec s")
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun formatTime(totalSec: Int): String {
+    val s = totalSec.coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
+}
