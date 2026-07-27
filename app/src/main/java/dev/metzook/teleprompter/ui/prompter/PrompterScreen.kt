@@ -93,6 +93,7 @@ import dev.metzook.teleprompter.asr.AsrModels
 import dev.metzook.teleprompter.asr.AsrState
 import dev.metzook.teleprompter.asr.ModelManager
 import dev.metzook.teleprompter.follow.FollowMode
+import dev.metzook.teleprompter.follow.LangDetect
 import dev.metzook.teleprompter.follow.MatchLang
 import dev.metzook.teleprompter.follow.Matcher
 import dev.metzook.teleprompter.follow.ScriptIndex
@@ -183,12 +184,19 @@ fun PrompterScreen(
             persistFont = p.overrides.fontScale == null
             mirrorH = p.overrides.mirror ?: s.mirrorH
             mirrorV = s.mirrorV
-            scriptLang = p.overrides.lang
-            // A model matching the script's language wins over the configured one.
-            val byLang = p.overrides.lang?.let { tag ->
-                AsrModels.ALL.firstOrNull { it.lang.equals(tag.trim(), ignoreCase = true) }
+            // Model choice: frontmatter `lang:` > stopword auto-detection of the
+            // script text > configured default — installed models only. The
+            // wrong model turns speech into unmatchable garbage, so the script
+            // itself decides, not a leftover settings pick.
+            val detected = LangDetect.detect(
+                p.toDisplaySegments().filter { it.spoken }.joinToString(" ") { it.text },
+            )
+            val langTag = p.overrides.lang?.trim() ?: detected?.name?.lowercase()
+            scriptLang = langTag
+            val byLang = langTag?.let { tag ->
+                AsrModels.ALL.firstOrNull { it.lang.equals(tag, ignoreCase = true) }
             }
-            preferredModel = listOfNotNull(byLang, AsrModels.byId(s.asrModelId))
+            preferredModel = (listOfNotNull(byLang, AsrModels.byId(s.asrModelId)) + AsrModels.ALL)
                 .firstOrNull { modelManager.isInstalled(it) }
             asrModel = if (s.asrOverlay || s.followVoice) preferredModel else null
             parsed = p
@@ -256,6 +264,48 @@ fun PrompterScreen(
         }
     }
 
+    // --- Voice: mic → streaming ASR → matcher + debug overlay ---
+    var micGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { micGranted = it }
+    LaunchedEffect(asrModel) {
+        if (asrModel != null && !micGranted) {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val engine = remember(asrModel, micGranted) {
+        val m = asrModel
+        if (m != null && micGranted) AsrEngine(modelManager.dirFor(m), m) else null
+    }
+    DisposableEffect(engine) {
+        engine?.start()
+        onDispose { engine?.stop() }
+    }
+    val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
+    val followActive = followVoice && engine != null
+
+    // Feed the matcher only while delivering; speech during pause is skipped,
+    // not matched, so resuming never replays a backlog.
+    LaunchedEffect(engine, matcher) {
+        engine?.events?.collect { event ->
+            if (followVoice && playing) {
+                followState = matcher.onWords(
+                    event.utterance,
+                    event.words,
+                    final = event is AsrEvent.Final,
+                )
+            } else {
+                matcher.skip(event.utterance, event.words)
+            }
+        }
+    }
+
     fun adjustWpm(delta: Int) {
         wpm = (wpm + delta).coerceIn(40, 400)
         if (persistWpm) scope.launch { settingsRepo.setWpm(wpm) }
@@ -306,59 +356,29 @@ fun PrompterScreen(
     fun jumpPx(): Float =
         if (pxPerSec > 0f) pxPerSec * 5f else viewportPx * 0.3f
 
+    // In follow mode the jump keys re-anchor the matcher by paragraph — the
+    // phone is on the rig, out of reach, so retakes are remote-driven (SPEC
+    // principle 2: never touch mid-take). The scroll then glides to the anchor.
+    fun reanchorTo(anchor: Int) {
+        matcher.reanchor(anchor)
+        followState = matcher.state
+    }
+
     fun perform(action: PrompterAction) {
         when (action) {
             PrompterAction.NONE -> Unit
             PrompterAction.PLAY_PAUSE -> togglePlay()
             PrompterAction.RESTART -> restart()
-            PrompterAction.JUMP_BACK -> scope.launch { scrollState.scrollBy(-jumpPx()) }
-            PrompterAction.JUMP_FORWARD -> scope.launch { scrollState.scrollBy(jumpPx()) }
+            PrompterAction.JUMP_BACK ->
+                if (followActive) reanchorTo(scriptIndex.paragraphBackAnchor(followState.anchor))
+                else scope.launch { scrollState.scrollBy(-jumpPx()) }
+            PrompterAction.JUMP_FORWARD ->
+                if (followActive) reanchorTo(scriptIndex.paragraphForwardAnchor(followState.anchor))
+                else scope.launch { scrollState.scrollBy(jumpPx()) }
             PrompterAction.SPEED_UP -> adjustWpm(10)
             PrompterAction.SPEED_DOWN -> adjustWpm(-10)
             PrompterAction.FONT_UP -> adjustFont(2f)
             PrompterAction.FONT_DOWN -> adjustFont(-2f)
-        }
-    }
-
-    // --- Voice preview (M2): mic → streaming ASR → debug overlay ---
-    var micGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val micPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { micGranted = it }
-    LaunchedEffect(asrModel) {
-        if (asrModel != null && !micGranted) {
-            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-    val engine = remember(asrModel, micGranted) {
-        val m = asrModel
-        if (m != null && micGranted) AsrEngine(modelManager.dirFor(m), m) else null
-    }
-    DisposableEffect(engine) {
-        engine?.start()
-        onDispose { engine?.stop() }
-    }
-    val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
-    val followActive = followVoice && engine != null
-
-    // Feed the matcher only while delivering; speech during pause is skipped,
-    // not matched, so resuming never replays a backlog.
-    LaunchedEffect(engine, matcher) {
-        engine?.events?.collect { event ->
-            if (followVoice && playing) {
-                followState = matcher.onWords(
-                    event.utterance,
-                    event.words,
-                    final = event is AsrEvent.Final,
-                )
-            } else {
-                matcher.skip(event.utterance, event.words)
-            }
         }
     }
 
@@ -563,15 +583,18 @@ fun PrompterScreen(
         }
 
         if (engine != null) {
+            // Always name the active language — a wrong-model session must be
+            // visible at a glance, not a silent failure to follow.
+            val lang = asrModel?.lang ?: "?"
             val statusText = when {
                 asrState.error != null -> asrState.error
                 !asrState.listening -> "starting…"
-                followActive && followState.mode == FollowMode.FROZEN -> "improv · holding"
+                followActive && followState.mode == FollowMode.FROZEN -> "improv · holding · $lang"
                 followActive && followState.anchor >= 0 ->
-                    "following · ${followState.anchor + 1}/${scriptIndex.tokens.size}" +
+                    "following · $lang · ${followState.anchor + 1}/${scriptIndex.tokens.size}" +
                         " · ${asrState.decodeMs} ms"
-                followActive -> "waiting for your voice · ${asrState.decodeMs} ms"
-                else -> "listening · ${asrState.decodeMs} ms"
+                followActive -> "waiting for your voice · $lang"
+                else -> "listening · $lang · ${asrState.decodeMs} ms"
             }
             Column(
                 Modifier

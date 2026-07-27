@@ -22,6 +22,8 @@ data class ScriptToken(
 class ScriptIndex(
     val tokens: List<ScriptToken>,
     val lang: MatchLang,
+    /** Token index of each paragraph's first spoken token, ascending. */
+    val paragraphStarts: IntArray = intArrayOf(),
 ) {
     /** norm → ascending token positions; drives the rejoin run tracker. */
     val positionsByNorm: Map<String, IntArray> = run {
@@ -30,16 +32,41 @@ class ScriptIndex(
         map.mapValues { (_, v) -> v.toIntArray() }
     }
 
+    /**
+     * Anchor for a remote-key "retake": start of the current paragraph, or the
+     * previous one when the reading barely entered this one (track-skip idiom).
+     * Anchors are "last spoken token", so a paragraph starting at s → s - 1.
+     */
+    fun paragraphBackAnchor(anchor: Int): Int {
+        if (paragraphStarts.isEmpty()) return anchor
+        val current = paragraphStarts.lastOrNull { it <= anchor } ?: return -1
+        val target =
+            if (anchor - current <= 1) paragraphStarts.lastOrNull { it < current } ?: current
+            else current
+        return target - 1
+    }
+
+    /** Anchor at the start of the next unread paragraph; unchanged from the last one. */
+    fun paragraphForwardAnchor(anchor: Int): Int =
+        paragraphStarts.firstOrNull { it > anchor + 1 }?.let { it - 1 } ?: anchor
+
     companion object {
         private val WORD = Regex("\\S+")
 
         fun build(segments: List<SpokenSegment>, lang: MatchLang): ScriptIndex {
             val tokens = ArrayList<ScriptToken>()
+            val paragraphStarts = ArrayList<Int>()
             var offset = 0
+            var paragraphBreak = true
             for (seg in segments) {
                 if (seg.spoken) {
                     for (m in WORD.findAll(seg.text)) {
-                        for (norm in TextNorm.matchTokens(m.value, lang)) {
+                        val norms = TextNorm.matchTokens(m.value, lang)
+                        if (norms.isNotEmpty() && paragraphBreak) {
+                            paragraphStarts += tokens.size
+                            paragraphBreak = false
+                        }
+                        for (norm in norms) {
                             tokens += ScriptToken(
                                 norm = norm,
                                 charStart = offset + m.range.first,
@@ -47,10 +74,14 @@ class ScriptIndex(
                             )
                         }
                     }
+                } else if (seg.text.contains('\n')) {
+                    // Separator segments mark paragraph boundaries; inline stage
+                    // directions don't split a paragraph.
+                    paragraphBreak = true
                 }
                 offset += seg.text.length
             }
-            return ScriptIndex(tokens, lang)
+            return ScriptIndex(tokens, lang, paragraphStarts.toIntArray())
         }
     }
 }

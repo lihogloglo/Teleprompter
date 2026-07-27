@@ -89,8 +89,10 @@ them to sharpen rate estimation, but don't depend on it.
 ### 3.4 Languages
 
 Model-per-language, downloaded/bundled once (streaming zipformer models are ~50–300 MB).
-Per-script language selection via frontmatter (`lang: fr`), falling back to app default.
-Matching must be Unicode/diacritic-aware.
+Per-script model selection (the wrong model = unmatchable garbage, so the script decides):
+frontmatter `lang: fr` > stopword auto-detection of the script text > configured default —
+installed models only. The active language is shown in the session overlay so a mismatch is
+visible, never a silent failure to follow. Matching must be Unicode/diacritic-aware.
 
 ## 4. Obsidian bridge
 
@@ -156,7 +158,10 @@ mirror: false
 
 1. Pick script from library (shows estimated read time at your historical WPM).
 2. Pre-roll screen: countdown (0–10 s) *or* start-on-voice.
-3. Deliver. Tap anywhere = pause/menu. Long-press paragraph = re-anchor there.
+3. Deliver. The phone sits on the rig, out of reach — **mid-take control is voice or remote
+   only** (principle 2). In follow mode the jump keys re-anchor by paragraph: back = retake
+   from the current paragraph's start (again = previous paragraph); forward = skip ahead.
+   Touch (tap = pause/menu) is for handheld use only; nothing mid-take may require it.
 4. End screen: duration, average WPM, per-section times, improv/freeze count. (Data feeds
    rehearsal mode.)
 
@@ -294,8 +299,14 @@ published anchor provisionally on exact match (committed state untouched — a r
 falls back); scroll target interpolates *inside* the line (no more line-height hops) and leads
 the anchor by 0.45 s of measured rate; asymmetric spring (catch-up τ 0.20 s, ease-back 0.50 s).
 Feel constants live at the top of PrompterScreen.kt, matcher knobs in MatcherConfig.
-**Next: re-validate reactivity on device, then rest of M4** (threshold tuning on real speech,
-long-press manual re-anchor, lost state, start-on-voice, jump keys re-anchor in follow mode).
+**M4 slice 2** (2026-07-27, from device feedback): script-language **auto-detection**
+(stopword scoring in `follow/LangDetect`, frontmatter override, configured model as fallback,
+installed-only) — fixes silent wrong-model sessions (EN script + leftover FR default = no
+follow); active language shown in the overlay. **Touch-free re-anchor**: jump keys re-anchor
+the matcher by paragraph in follow mode (back = retake paragraph, again = previous; forward =
+skip) — long-press re-anchor dropped, phone-on-rig means touch is never a mid-take control.
+**Next: re-validate on device, then rest of M4** (threshold tuning on real speech, lost state,
+start-on-voice).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*

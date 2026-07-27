@@ -49,4 +49,33 @@ class ScriptIndexTest {
         val index = Replay.indexOf("the cat and the dog")
         assertEquals(listOf(0, 3), index.positionsByNorm["the"]!!.toList())
     }
+
+    // Paragraph tokens: [0..2], [3..6], [7] — headings/rules don't start one.
+    private val paragraphed = Replay.indexOf(
+        "One two three.\n\n# Heading\n\nFour five six seven.\n\n---\n\nEight.",
+    )
+
+    @Test
+    fun `paragraph starts skip headings and rules`() {
+        assertEquals(listOf(0, 3, 7), paragraphed.paragraphStarts.toList())
+    }
+
+    @Test
+    fun `jump back re-anchors to paragraph start, then previous`() {
+        // Mid second paragraph → its start (anchor 2 = "next expected is token 3").
+        assertEquals(2, paragraphed.paragraphBackAnchor(5))
+        // Barely entered → previous paragraph instead (track-skip idiom).
+        assertEquals(-1, paragraphed.paragraphBackAnchor(3))
+        // Before any match → top of script.
+        assertEquals(-1, paragraphed.paragraphBackAnchor(-1))
+    }
+
+    @Test
+    fun `jump forward re-anchors to the next paragraph`() {
+        assertEquals(2, paragraphed.paragraphForwardAnchor(0))
+        // Already at the start of a paragraph → skip to the one after it.
+        assertEquals(6, paragraphed.paragraphForwardAnchor(2))
+        // Nothing after the last paragraph: stay put.
+        assertEquals(7, paragraphed.paragraphForwardAnchor(7))
+    }
 }
