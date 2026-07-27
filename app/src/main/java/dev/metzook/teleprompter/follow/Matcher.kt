@@ -86,8 +86,8 @@ class Matcher(
 
     /**
      * Feed one ASR partial (the utterance's words so far). Growing partials are
-     * deduplicated internally; the still-changing last word is held back until
-     * [final]. Returns the updated [state].
+     * deduplicated internally; the still-changing last word never commits state
+     * but may advance the *returned* anchor provisionally (see [provisional]).
      */
     fun onWords(utterance: Int, words: List<TimedWord>, final: Boolean): FollowState {
         if (utterance != currentUtterance) {
@@ -103,7 +103,43 @@ class Matcher(
             }
         }
         consumedWords = max(consumedWords, limit)
-        return state
+        if (final || words.isEmpty()) return state
+        return provisional(words.last())
+    }
+
+    /**
+     * The newest partial word is still growing, so it must not commit anything —
+     * but if it already *exactly* matches the next expected script tokens, the
+     * published anchor advances one partial early, cutting ~0.3–0.5 s of felt
+     * latency. Exact-only on purpose: a growing word often prefix-matches a
+     * different word, and a wrong guess costs a one-token target regression
+     * (hidden by the scroll's gentle ease-back). Recomputed from committed
+     * state every call, so a revised word simply falls back.
+     */
+    private fun provisional(word: TimedWord): FollowState {
+        if (state.mode != FollowMode.FOLLOWING) return state
+        val norms = TextNorm.matchTokens(word.text, index.lang)
+        if (norms.isEmpty()) return state
+        var pos = state.anchor
+        norms.forEachIndexed { i, norm ->
+            // The first token may sit a couple ahead (skipped filler); the
+            // rest of a split word must be consecutive.
+            val last = if (i == 0) min(pos + 3, tokens.size - 1) else min(pos + 1, tokens.size - 1)
+            var found = -1
+            for (j in (pos + 1)..last) {
+                if (tokens[j].norm == norm) {
+                    found = j
+                    break
+                }
+            }
+            if (found < 0) return state
+            pos = found
+        }
+        return state.copy(
+            anchor = pos,
+            anchorCharEnd = tokens[pos].charEnd,
+            progress = if (tokens.isEmpty()) 0f else (pos + 1).toFloat() / tokens.size,
+        )
     }
 
     /** Skip past speech without matching it (e.g. words spoken while paused). */

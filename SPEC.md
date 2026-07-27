@@ -288,8 +288,14 @@ AsrEngine emits word-level `AsrEvent`s (BPE pieces merged, utterance-scoped time
 PrompterScreen "Follow voice" chip (persisted; model auto-picked by script `lang`) drives a
 critically-damped scroll toward the anchor line with rate feed-forward; eyeline marker dims
 while frozen; live remaining-time from measured rate. Timed scrolling remains the fallback.
-**Next: on-device validation of follow mode, then M4 robustness** (tuning freeze/rejoin
-thresholds on real speech, manual re-anchor via long-press, lost state, start-on-voice).
+**M3 validated on device** (2026-07-27, EN + FR) — follow works but first cut felt laggy
+(~1–1.5 s). **M4 reactivity pass landed**: the still-growing last partial word now advances the
+published anchor provisionally on exact match (committed state untouched — a revision just
+falls back); scroll target interpolates *inside* the line (no more line-height hops) and leads
+the anchor by 0.45 s of measured rate; asymmetric spring (catch-up τ 0.20 s, ease-back 0.50 s).
+Feel constants live at the top of PrompterScreen.kt, matcher knobs in MatcherConfig.
+**Next: re-validate reactivity on device, then rest of M4** (threshold tuning on real speech,
+long-press manual re-anchor, lost state, start-on-voice, jump keys re-anchor in follow mode).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*

@@ -58,12 +58,43 @@ class MatcherReplayTest {
     }
 
     @Test
-    fun `partials hold back the still-growing last word`() {
+    fun `growing last word advances the published anchor provisionally`() {
         val m = matcher()
-        m.onWords(0, Replay.wordsOf("welcome to"), final = false)
-        assertEquals(0, m.state.anchor) // only "welcome" processed
+        val st = m.onWords(0, Replay.wordsOf("welcome to"), final = false)
+        assertEquals(1, st.anchor) // "to" exactly matches → provisional advance
+        assertEquals(0, m.state.anchor) // committed state still holds it back
         m.onWords(0, Replay.wordsOf("welcome to"), final = true)
         assertEquals(1, m.state.anchor)
+    }
+
+    @Test
+    fun `growing last word that mismatches stays put and revisions recover`() {
+        val m = matcher()
+        // "tomato" could be a half-recognized word: no provisional movement.
+        val st = m.onWords(0, Replay.wordsOf("welcome tomato"), final = false)
+        assertEquals(0, st.anchor)
+        assertEquals(0, m.state.anchor)
+        // The recognizer revises it to the real words: confirm + provisional.
+        val st2 = m.onWords(0, Replay.wordsOf("welcome to the"), final = false)
+        assertEquals(2, st2.anchor) // "to" confirmed (1), "the" provisional (2)
+        assertEquals(1, m.state.anchor)
+    }
+
+    @Test
+    fun `no provisional advance while frozen`() {
+        val m = matcher()
+        Replay.feed(m, para1)
+        Replay.feedUtterance(
+            m,
+            1,
+            Replay.wordsOf("let me tell you something completely different about my weekend plans instead"),
+        )
+        assertEquals(FollowMode.FROZEN, m.state.mode)
+        val frozenAnchor = m.state.anchor
+        // "the" would exact-match ahead, but frozen requires a rejoin run.
+        val st = m.onWords(2, Replay.wordsOf("the"), final = false)
+        assertEquals(frozenAnchor, st.anchor)
+        assertEquals(FollowMode.FROZEN, st.mode)
     }
 
     @Test

@@ -122,6 +122,15 @@ import kotlinx.coroutines.withContext
 /** Reading band position: the eyeline sits in the upper third (SPEC §5.1). */
 private const val EYELINE_FRACTION = 0.30f
 
+/**
+ * Follow-mode scroll feel: the target leads the anchor by [FOLLOW_LEAD_SEC]
+ * of measured rate to compensate recognizer confirmation delay, and the
+ * spring catches up briskly but eases back gently (SPEC §1: glide, never jump).
+ */
+private const val FOLLOW_LEAD_SEC = 0.45f
+private const val CATCH_UP_TAU = 0.20f
+private const val EASE_BACK_TAU = 0.50f
+
 private val COUNTDOWN_CYCLE = listOf(0, 1, 2, 3, 5)
 
 @Composable
@@ -383,21 +392,36 @@ fun PrompterScreen(
                 val st = followState
                 if (layout != null && st.anchor >= 0) {
                     val offset = (st.anchorCharEnd - 1).coerceIn(0, layout.layoutInput.text.length)
-                    val target = layout.getLineTop(layout.getLineForOffset(offset))
-                    val value = scrollState.value.toFloat()
-                    val approach = (target - value) * (1f - exp(-dt / 0.35f))
-                    val feedForward = if (st.mode == FollowMode.FOLLOWING &&
-                        scriptIndex.tokens.isNotEmpty() && contentHeightPx > 0
-                    ) {
-                        st.tokensPerSec * (contentHeightPx.toFloat() / scriptIndex.tokens.size) * dt
-                    } else {
-                        0f
-                    }
-                    val maxLead = with(density) { (fontSp * 1.4f).sp.toPx() }
-                    val next = (value + approach + feedForward)
-                        .coerceAtMost(target + maxLead)
+                    val line = layout.getLineForOffset(offset)
+                    val lineTop = layout.getLineTop(line)
+                    val nextTop =
+                        if (line + 1 < layout.lineCount) layout.getLineTop(line + 1)
+                        else layout.getLineBottom(line)
+                    // Interpolate inside the line so the target moves word by
+                    // word instead of hopping a line-height at a time.
+                    val lineStart = layout.getLineStart(line)
+                    val lineEnd = layout.getLineEnd(line)
+                    val frac =
+                        if (lineEnd > lineStart) {
+                            (offset - lineStart).toFloat() / (lineEnd - lineStart)
+                        } else 0f
+                    val following = st.mode == FollowMode.FOLLOWING
+                    val lineHeightPx = with(density) { (fontSp * 1.4f).sp.toPx() }
+                    val pxPerToken =
+                        if (scriptIndex.tokens.isNotEmpty() && contentHeightPx > 0) {
+                            contentHeightPx.toFloat() / scriptIndex.tokens.size
+                        } else 0f
+                    val lead =
+                        if (following) {
+                            (st.tokensPerSec * pxPerToken * FOLLOW_LEAD_SEC)
+                                .coerceAtMost(lineHeightPx)
+                        } else 0f
+                    val target = (lineTop + frac * (nextTop - lineTop) + lead)
                         .coerceIn(0f, scrollState.maxValue.toFloat())
-                    scrollState.scrollBy(next - value)
+                    val value = scrollState.value.toFloat()
+                    val err = target - value
+                    val tau = if (err >= 0f) CATCH_UP_TAU else EASE_BACK_TAU
+                    scrollState.scrollBy(err * (1f - exp(-dt / tau)))
                 }
             } else {
                 if (pxPerSec > 0f) scrollState.scrollBy(dt * pxPerSec)
