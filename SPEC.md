@@ -325,9 +325,11 @@ freeze/lost/retake counts, per-section time+WPM (sections from headings via
 `ParsedScript.sections()`), and a timestamped event list (feeds rehearsal heatmap + marker log
 later). Exit/back after a ≥10 s take shows the summary overlay first ("Back to script" /
 "Done"); follow-mode sessions only.
-**Next in M5**: appearance profiles, marker-log file export, distance→size calculator
-(§6.1 rungs 1–2), MediaSession for AVRCP remotes. Battery/thermal over a 30+ min session
-still unmeasured (§9 risk).
+**Repo made public** (2026-07-27): README rewritten for outside readers, MIT license, release
+APK (v0.5.0, debug-key signed) published on GitHub Releases.
+**To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
+appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
+Battery/thermal over a 30+ min session still unmeasured (§9 risk).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*
