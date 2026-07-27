@@ -2,8 +2,12 @@
 
 package dev.metzook.teleprompter.ui.prompter
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.view.WindowManager
 import androidx.activity.compose.LocalActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -68,14 +72,21 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import dev.metzook.teleprompter.VolumeKeyBus
+import dev.metzook.teleprompter.KeyCommandBus
+import dev.metzook.teleprompter.asr.AsrEngine
+import dev.metzook.teleprompter.asr.AsrModel
+import dev.metzook.teleprompter.asr.AsrModels
+import dev.metzook.teleprompter.asr.AsrState
+import dev.metzook.teleprompter.asr.ModelManager
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
 import dev.metzook.teleprompter.settings.SettingsRepository
@@ -88,6 +99,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import androidx.compose.runtime.collectAsState
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
@@ -103,12 +116,14 @@ private val COUNTDOWN_CYCLE = listOf(0, 1, 2, 3, 5)
 fun PrompterScreen(
     repo: ScriptRepository,
     settingsRepo: SettingsRepository,
+    modelManager: ModelManager,
     scriptId: String,
     onExit: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val activity = LocalActivity.current
     val view = LocalView.current
+    val context = LocalContext.current
 
     var script by remember { mutableStateOf<Script?>(null) }
     var parsed by remember { mutableStateOf<ParsedScript?>(null) }
@@ -125,12 +140,15 @@ fun PrompterScreen(
     // Frontmatter overrides make a value session-only: don't write it back to defaults.
     var persistWpm by remember { mutableStateOf(true) }
     var persistFont by remember { mutableStateOf(true) }
+    var asrModel by remember { mutableStateOf<AsrModel?>(null) }
 
     LaunchedEffect(scriptId) {
         val s = settingsRepo.settings.first()
         gestureMap = s.gestures
         pinchEnabled = s.pinchResize
         countdownSec = s.countdownSec
+        val model = AsrModels.byId(s.asrModelId)
+        asrModel = if (s.asrOverlay && modelManager.isInstalled(model)) model else null
         val loadedScript = withContext(Dispatchers.IO) { repo.load(scriptId) }
         if (loadedScript != null) {
             val p = withContext(Dispatchers.Default) { MarkdownParser.parse(loadedScript.body) }
@@ -249,13 +267,37 @@ fun PrompterScreen(
         }
     }
 
+    // --- Voice preview (M2): mic → streaming ASR → debug overlay ---
+    var micGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { micGranted = it }
+    LaunchedEffect(asrModel) {
+        if (asrModel != null && !micGranted) {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val engine = remember(asrModel, micGranted) {
+        val m = asrModel
+        if (m != null && micGranted) AsrEngine(modelManager.dirFor(m), m) else null
+    }
+    DisposableEffect(engine) {
+        engine?.start()
+        onDispose { engine?.stop() }
+    }
+    val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
+
     DisposableEffect(Unit) {
-        VolumeKeyBus.active = true
-        onDispose { VolumeKeyBus.active = false }
+        KeyCommandBus.active = true
+        onDispose { KeyCommandBus.active = false }
     }
     LaunchedEffect(Unit) {
-        VolumeKeyBus.events.collect { dir ->
-            val slot = if (dir > 0) GestureSlot.VOLUME_UP else GestureSlot.VOLUME_DOWN
+        KeyCommandBus.events.collect { slot ->
             perform(gestureMap[slot] ?: slot.default)
         }
     }
@@ -394,6 +436,40 @@ fun PrompterScreen(
                     .align(Alignment.BottomEnd)
                     .padding(12.dp),
             )
+        }
+
+        if (engine != null) {
+            val statusText = when {
+                asrState.error != null -> asrState.error
+                asrState.listening -> "listening · ${asrState.decodeMs} ms"
+                else -> "starting…"
+            }
+            Column(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = 12.dp, end = 80.dp),
+            ) {
+                Text(
+                    "● $statusText",
+                    color = if (asrState.listening) {
+                        Color(0xFF7CCB7C).copy(alpha = 0.7f)
+                    } else {
+                        Color.White.copy(alpha = 0.4f)
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                val line = asrState.partial.ifBlank { asrState.lastFinal }
+                if (line.isNotBlank()) {
+                    Text(
+                        line.takeLast(120),
+                        color = Color.White.copy(
+                            alpha = if (asrState.partial.isNotBlank()) 0.6f else 0.35f,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                    )
+                }
+            }
         }
 
         if (countdown > 0) {

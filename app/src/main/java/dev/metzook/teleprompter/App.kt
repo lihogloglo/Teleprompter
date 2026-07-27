@@ -9,6 +9,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import dev.metzook.teleprompter.asr.ModelManager
 import dev.metzook.teleprompter.settings.SettingsRepository
 import dev.metzook.teleprompter.ui.edit.EditScreen
 import dev.metzook.teleprompter.ui.library.LibraryScreen
@@ -30,6 +31,7 @@ fun TeleprompterApp() {
         )
     }
     val settingsRepo = remember { SettingsRepository(context) }
+    val modelManager = remember { ModelManager(File(context.filesDir, "models")) }
     val nav = rememberNavController()
 
     TeleprompterTheme {
@@ -65,12 +67,17 @@ fun TeleprompterApp() {
                 PrompterScreen(
                     repo = repo,
                     settingsRepo = settingsRepo,
+                    modelManager = modelManager,
                     scriptId = entry.arguments?.getString("id").orEmpty(),
                     onExit = { nav.popBackStack() },
                 )
             }
             composable("settings") {
-                SettingsScreen(settingsRepo = settingsRepo, onBack = { nav.popBackStack() })
+                SettingsScreen(
+                    settingsRepo = settingsRepo,
+                    modelManager = modelManager,
+                    onBack = { nav.popBackStack() },
+                )
             }
         }
     }

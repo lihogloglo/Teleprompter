@@ -16,16 +16,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (VolumeKeyBus.active) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_VOLUME_UP -> {
-                    VolumeKeyBus.emit(1)
-                    return true
-                }
-                KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                    VolumeKeyBus.emit(-1)
-                    return true
-                }
+        if (KeyCommandBus.active) {
+            val slot = KeyCommandBus.slotForKeyCode(keyCode)
+            if (slot != null) {
+                KeyCommandBus.emit(slot)
+                return true
             }
         }
         return super.onKeyDown(keyCode, event)

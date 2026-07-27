@@ -18,6 +18,8 @@ data class PrompterSettings(
     val countdownSec: Int = 3,
     val pinchResize: Boolean = true,
     val vaultUri: String? = null,
+    val asrOverlay: Boolean = true,
+    val asrModelId: String = "zipformer-en-20M",
     val gestures: Map<GestureSlot, PrompterAction> =
         GestureSlot.entries.associateWith { it.default },
 )
@@ -32,6 +34,8 @@ class SettingsRepository(private val context: Context) {
     private val keyCountdown = intPreferencesKey("countdown_sec")
     private val keyPinchResize = booleanPreferencesKey("pinch_resize")
     private val keyVaultUri = stringPreferencesKey("vault_uri")
+    private val keyAsrOverlay = booleanPreferencesKey("asr_overlay")
+    private val keyAsrModelId = stringPreferencesKey("asr_model_id")
 
     private fun gestureKey(slot: GestureSlot) =
         stringPreferencesKey("gesture_${slot.name.lowercase()}")
@@ -45,6 +49,8 @@ class SettingsRepository(private val context: Context) {
             countdownSec = p[keyCountdown] ?: 3,
             pinchResize = p[keyPinchResize] ?: true,
             vaultUri = p[keyVaultUri],
+            asrOverlay = p[keyAsrOverlay] ?: true,
+            asrModelId = p[keyAsrModelId] ?: "zipformer-en-20M",
             gestures = GestureSlot.entries.associateWith { slot ->
                 p[gestureKey(slot)]
                     ?.let { stored -> PrompterAction.entries.firstOrNull { it.name == stored } }
@@ -85,5 +91,13 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setGesture(slot: GestureSlot, action: PrompterAction) {
         context.dataStore.edit { it[gestureKey(slot)] = action.name }
+    }
+
+    suspend fun setAsrOverlay(value: Boolean) {
+        context.dataStore.edit { it[keyAsrOverlay] = value }
+    }
+
+    suspend fun setAsrModelId(value: String) {
+        context.dataStore.edit { it[keyAsrModelId] = value }
     }
 }

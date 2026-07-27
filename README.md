@@ -4,8 +4,9 @@ A voice-following teleprompter for Android. The prompter adapts to the speaker �
 your pace, waits when you improvise, and catches up when you return to the script. Scripts are
 authored in Obsidian and read from the synced vault. All speech processing happens on-device.
 
-**Status:** M0 — classic prompter (timed smooth scrolling, appearance controls, mirror mode,
-volume-key speed nudge). Voice-following lands in M3–M4.
+**Status:** M2 — classic prompter, Obsidian vault bridge, customizable gestures and
+Bluetooth/HID remotes, on-device streaming ASR with live-transcript preview (sherpa-onnx,
+English + French models). Voice-following (the matcher) lands in M3–M4.
 
 See [SPEC.md](SPEC.md) for the full specification, architecture, and roadmap.
 

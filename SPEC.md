@@ -163,8 +163,12 @@ mirror: false
 ### 5.3 Controls that never require looking
 
 - Volume keys: pause/resume, or manual nudge back/forward (configurable).
-- Bluetooth remotes / clickers / foot pedals / keyboards (they present as HID keys or media
-  keys): map play/pause, ±speed, jump back a sentence, restart section.
+- **Bluetooth device support is a requirement** (2026-07-27): remotes, page-turner clickers,
+  foot pedals, keyboards, camera shutters. Most present as **HID keyboards** (arrow/page/enter
+  keys — sometimes volume keys, which is why volume mapping must stay flexible); some music
+  remotes use **AVRCP media keys**, which need a MediaSession to receive. All such keys are
+  mappable slots like touch gestures: play/pause, ±speed, jump back/forward, restart, text size.
+  v1 ships HID key mapping (center/prev/next slots); MediaSession for AVRCP-only remotes later.
 - All actions available as mappable commands (mirroring obsidian-teleprompter's
   everything-is-a-command approach).
 - Touch gestures are mappable too (shipped M1): double-tap and long-press each map to any
@@ -264,6 +268,15 @@ the picked folder acting as the filter; tag/frontmatter filtering and favorites 
 Landed early from later milestones: customizable gesture mapping (double-tap, long-press,
 volume keys → actions) + pinch-to-resize, per-user countdown control (off/1/2/3/5 s + "start
 now" skip), Markdown parser with unit tests (the parser is the seed of M3's ScriptModel).
+**M2 shipped and validated on device** (2026-07-27): sherpa-onnx v1.13.4 integrated (vendored
+Kotlin API `com.k2fsa.sherpa.onnx` + arm64 JNI libs in `app/src/main/jniLibs/`), in-app model
+downloader (en-20M small English, French large; HuggingFace), AsrEngine mic→decode loop with
+live-transcript debug overlay — user confirmed live transcription works with the English model.
+Bluetooth/HID remote keys landed (REMOTE_CENTER/PREV/NEXT mappable slots). Recognizer results
+include token-level timestamps — use them in M3's matcher. Branding done: `assets/branding/logo.svg`
+master + adaptive/monochrome launcher icon (eyeline-as-play-button mark).
+**Next: M3 — the matcher** (`follow/` package, pure Kotlin, transcript-replay tests; French +
+English from day one).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*
@@ -295,7 +308,9 @@ now" skip), Markdown parser with unit tests (the parser is the seed of M3's Scri
 - **Distance estimation may not beat calibration.** §6.1 rungs 3–4 are genuinely experimental;
   ship rungs 1–2 first and only keep continuous tracking if it's reliably better than the
   one-shot pre-roll calibration. Requires AGC-off capture, which the ASR path needs anyway.
-- Open: which language(s) do you record in? (Determines which models we benchmark first.)
+- ~~Open: which language(s)?~~ → **French primary, English also required** (resolved 2026-07-27).
+  Both models ship in-app (fr large + en-20M). M3 matcher must handle French properly:
+  diacritics, and apostrophe elisions (j'ai, l'école) in the tokenizer/normalizer.
 - ~~Open: exact phone model~~ → **vivo V2405A (X200), Android 16 (API 36), Dimensity 9400** —
   flagship SoC; ASR model size/latency will not be a constraint. (Resolved 2026-07-27.)
 
