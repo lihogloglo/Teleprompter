@@ -305,8 +305,15 @@ installed-only) — fixes silent wrong-model sessions (EN script + leftover FR d
 follow); active language shown in the overlay. **Touch-free re-anchor**: jump keys re-anchor
 the matcher by paragraph in follow mode (back = retake paragraph, again = previous; forward =
 skip) — long-press re-anchor dropped, phone-on-rig means touch is never a mid-take control.
-**Next: re-validate on device, then rest of M4** (threshold tuning on real speech, lost state,
-start-on-voice).
+**M4 slice 3 — distant-mic tolerance** (2026-07-27, device feedback: froze on improv far too
+eagerly; phone sits meters away, mic misses words, model mishears): freeze now needs 10 of the
+last 12 tokens unmatched (spurious freeze is worse than a late one — FROZEN disables the
+forward scan); rejoin runs continue through *fuzzy* matches, may start on fuzzy matches near
+the anchor while frozen, and near the anchor need only 2 consecutive hits (far jumps still 3);
+skip window 8→10 but long skips must land on a content word (≥4 chars) so coincidental
+function words can't drag the anchor during improv; fuzzy 2-edit threshold at length ≥8.
+Replay tests cover 33% word loss, mid-gap resume on a content word, and rejoin with garbled
+words. **Next: re-validate on device, then rest of M4** (lost state, start-on-voice).
 
 - **M0 — Scaffold + classic prompter.** Repo, CI-less local build, Compose app: paste/open a
   text, timed smooth scrolling, appearance controls, mirror, keep-awake. *Usable on day one.*

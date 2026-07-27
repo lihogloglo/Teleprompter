@@ -14,7 +14,7 @@ internal object Fuzzy {
         if (a == b) return true
         val longest = maxOf(a.length, b.length)
         val k = when {
-            longest >= 9 -> 2
+            longest >= 8 -> 2
             longest >= 5 -> 1
             else -> return false
         }

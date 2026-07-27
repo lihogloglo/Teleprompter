@@ -26,17 +26,32 @@ data class FollowState(
 
 data class MatcherConfig(
     /** Forward fuzzy scan: how many script tokens a reader may skip unnoticed. */
-    val maxSkipAhead: Int = 8,
+    val maxSkipAhead: Int = 10,
+    /**
+     * Skips beyond this need a content word (norm length ≥ [contentLen]):
+     * function words match ahead by coincidence and would drag the anchor
+     * forward during improv.
+     */
+    val smallSkip: Int = 2,
+    val contentLen: Int = 4,
     /** Re-said recent tokens (stutter/emphasis) count as on-script, no advance. */
     val backRepeat: Int = 2,
-    /** Consecutive matched tokens required for a rejoin/retake jump (SPEC N≈3–4). */
+    /** Consecutive matched tokens required for a far rejoin/retake jump (SPEC N≈3–4). */
     val rejoinRun: Int = 3,
+    /** Within this distance of the anchor a run of [nearRejoinRun] suffices —
+     *  cheap if wrong, and it heals spurious freezes fast. */
+    val nearRejoinDistance: Int = 10,
+    val nearRejoinRun: Int = 2,
     /** Rejoin search window around the anchor, in tokens (SPEC ±150). */
     val rejoinBack: Int = 250,
     val rejoinForward: Int = 250,
-    /** Freeze when ≥ [freezeUnmatched] of the last [freezeWindow] tokens missed. */
-    val freezeWindow: Int = 8,
-    val freezeUnmatched: Int = 6,
+    /**
+     * Freeze when ≥ [freezeUnmatched] of the last [freezeWindow] tokens missed.
+     * Deliberately demanding: with a distant mic 30–40% of words go missing or
+     * get misheard, and a spurious freeze is far worse than a late one.
+     */
+    val freezeWindow: Int = 12,
+    val freezeUnmatched: Int = 10,
     /** Rate EMA weight and clamps (tokens/sec). */
     val rateAlpha: Float = 0.3f,
     val minRate: Float = 0.3f,
@@ -179,12 +194,15 @@ class Matcher(
             return
         }
 
-        // Greedy forward scan: nearest fuzzy match within a short skip range.
+        // Greedy forward scan: nearest fuzzy match within the skip range.
+        // Long skips must land on a content word — "the"/"it"/"de" appear
+        // everywhere and would yank the anchor ahead on coincidences.
         var forward = -1
         val from = anchor + 1
         val to = min(tokens.size - 1, anchor + config.maxSkipAhead)
         for (j in from..to) {
-            if (Fuzzy.matches(tokens[j].norm, norm)) {
+            if (!Fuzzy.matches(tokens[j].norm, norm)) continue
+            if (j - from <= config.smallSkip || norm.length >= config.contentLen) {
                 forward = j
                 break
             }
@@ -234,16 +252,35 @@ class Matcher(
 
     /**
      * Track consecutive-match runs across a wide window around the anchor.
-     * Returns a re-anchor position once a run of [MatcherConfig.rejoinRun]
-     * lands — only for genuine jumps unless [anyPosition] (frozen) is set.
-     * Tolerates one skipped script token inside a run and one unmatched
-     * spoken token between run words (carried-over runs).
+     * Returns a re-anchor position once a long-enough run lands — near the
+     * anchor [MatcherConfig.nearRejoinRun] suffices, farther jumps need
+     * [MatcherConfig.rejoinRun]; only genuine jumps unless [anyPosition]
+     * (frozen) is set. Distant-mic tolerance: runs start on exact matches but
+     * *continue* through fuzzy ones, may skip one script token, survive one
+     * unmatched spoken token (carried-over runs), and while frozen may even
+     * start on a fuzzy match near the anchor — so a spurious freeze heals
+     * within a couple of words of continued reading.
      */
     private fun updateRuns(norm: String, anchor: Int, anyPosition: Boolean): Int {
-        val positions = index.positionsByNorm[norm]
         val lo = max(0, anchor - config.rejoinBack)
         val hi = min(tokens.size - 1, anchor + config.rejoinForward)
-        val candidates = positions?.filter { it in lo..hi }.orEmpty()
+
+        val candidates = HashSet<Int>()
+        index.positionsByNorm[norm]?.forEach { if (it in lo..hi) candidates += it }
+        for (p in runs.keys) {
+            for (jn in (p + 1)..(p + 2)) {
+                if (jn in lo..hi && jn !in candidates && Fuzzy.matches(tokens[jn].norm, norm)) {
+                    candidates += jn
+                }
+            }
+        }
+        if (anyPosition) {
+            val nearLo = max(0, anchor - 4)
+            val nearHi = min(tokens.size - 1, anchor + config.maxSkipAhead)
+            for (j in nearLo..nearHi) {
+                if (j !in candidates && Fuzzy.matches(tokens[j].norm, norm)) candidates += j
+            }
+        }
 
         if (candidates.isEmpty()) {
             // One unmatched token (misrecognition) may interpose without killing runs.
@@ -262,7 +299,10 @@ class Matcher(
         for (j in candidates) {
             val run = 1 + (runs[j - 1] ?: runs[j - 2] ?: 0)
             next[j] = run
-            if (run >= config.rejoinRun) {
+            val needed =
+                if (abs(j - anchor) <= config.nearRejoinDistance) config.nearRejoinRun
+                else config.rejoinRun
+            if (run >= needed) {
                 val isJump = j > anchor + config.maxSkipAhead || j < anchor - config.backRepeat
                 if ((anyPosition || isJump) &&
                     (run > bestRun || (run == bestRun && abs(j - anchor) < abs(best - anchor)))

@@ -58,6 +58,51 @@ class MatcherReplayTest {
     }
 
     @Test
+    fun `distant-mic conditions - every third word lost - never freezes`() {
+        val m = matcher()
+        val state = Replay.feed(
+            m,
+            Replay.corrupt(para1, 3),
+            Replay.corrupt(para2, 3),
+            Replay.corrupt(para3, 3),
+        )
+        assertTrue("anchor was ${state.anchor}", state.anchor >= 50)
+        assertEquals(FollowMode.FOLLOWING, state.mode)
+    }
+
+    @Test
+    fun `a missed run of words resumes on the next content word`() {
+        val m = matcher()
+        Replay.feed(m, para1)
+        // Mic missed "the colosseum was built almost two": reading resumes
+        // six tokens ahead on a content word — no freeze, no rejoin needed.
+        val state = Replay.feedUtterance(
+            m,
+            1,
+            Replay.wordsOf("thousand years ago it could"),
+        )
+        assertEquals(30, state.anchor)
+        assertEquals(FollowMode.FOLLOWING, state.mode)
+    }
+
+    @Test
+    fun `rejoin works even with mispronounced words in the rejoin phrase`() {
+        val m = matcher()
+        Replay.feed(m, para1)
+        Replay.feedUtterance(
+            m,
+            1,
+            Replay.wordsOf("let me tell you something completely different about my weekend plans instead"),
+        )
+        assertEquals(FollowMode.FROZEN, m.state.mode)
+
+        // First word garbled, rest imperfect: near-rejoin still lands.
+        val state = Replay.feedUtterance(m, 2, Replay.wordsOf(Replay.corrupt(para2, 4)))
+        assertEquals(FollowMode.FOLLOWING, state.mode)
+        assertEquals(34, state.anchor)
+    }
+
+    @Test
     fun `growing last word advances the published anchor provisionally`() {
         val m = matcher()
         val st = m.onWords(0, Replay.wordsOf("welcome to"), final = false)
