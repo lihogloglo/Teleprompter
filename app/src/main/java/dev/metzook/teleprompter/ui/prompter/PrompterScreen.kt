@@ -296,6 +296,22 @@ fun PrompterScreen(
         }
     }
 
+    // A reader can only speak words they can see: the matcher is told what the
+    // screen currently shows so it never matches — or jumps to — off-screen text.
+    fun visibleTokenRange(): IntRange? {
+        val layout = textLayout ?: return null
+        if (viewportPx <= 0) return null
+        val topSpacerPx = viewportPx * EYELINE_FRACTION
+        // Half a line of slack per edge: partially clipped lines still count.
+        val slack = with(density) { (fontSp * 1.4f).sp.toPx() } / 2f
+        val top = (scrollState.value - topSpacerPx - slack).coerceAtLeast(0f)
+        val bottom = scrollState.value - topSpacerPx + viewportPx + slack
+        if (bottom <= 0f) return null
+        val charLo = layout.getLineStart(layout.getLineForVerticalPosition(top))
+        val charHi = layout.getLineEnd(layout.getLineForVerticalPosition(bottom))
+        return scriptIndex.tokenRangeForChars(charLo, charHi)
+    }
+
     // --- Voice: mic → streaming ASR → matcher + debug overlay ---
     var micGranted by remember {
         mutableStateOf(
@@ -327,6 +343,7 @@ fun PrompterScreen(
     LaunchedEffect(engine, matcher) {
         engine?.events?.collect { event ->
             if (followVoice && (playing || armed)) {
+                matcher.visibleTokens = visibleTokenRange()
                 publishState(
                     matcher.onWords(
                         event.utterance,
@@ -386,11 +403,18 @@ fun PrompterScreen(
 
     fun togglePlay() {
         when {
+            // The on-screen "Start now" buttons are out of reach on a rig, so a
+            // press during the countdown (or while armed for start-on-voice)
+            // starts immediately; cancelling is just start-then-pause.
             countdown > 0 -> {
                 countdownJob?.cancel()
                 countdown = 0
+                playing = true
             }
-            armed -> armed = false
+            armed -> {
+                armed = false
+                playing = true
+            }
             playing -> playing = false
             scrollState.maxValue > 0 && scrollState.value >= scrollState.maxValue -> restart()
             countdownSec == START_ON_VOICE ->
@@ -452,7 +476,13 @@ fun PrompterScreen(
     }
     LaunchedEffect(Unit) {
         KeyCommandBus.events.collect { slot ->
-            perform(gestureMap[slot] ?: slot.default)
+            // The end screen swallows touch; keys mirror that: any press is
+            // "Back to script" instead of leaking into the prompter beneath.
+            if (summaryStats != null) {
+                summaryStats = null
+            } else {
+                perform(gestureMap[slot] ?: slot.default)
+            }
         }
     }
     // Pinch-resize persists debounced, and only when not overridden by frontmatter.

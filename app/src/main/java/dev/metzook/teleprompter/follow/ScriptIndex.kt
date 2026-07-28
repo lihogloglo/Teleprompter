@@ -50,6 +50,32 @@ class ScriptIndex(
     fun paragraphForwardAnchor(anchor: Int): Int =
         paragraphStarts.firstOrNull { it > anchor + 1 }?.let { it - 1 } ?: anchor
 
+    /**
+     * Range of tokens whose char span overlaps [charLo, charHi) of the display
+     * text — i.e. the tokens inside a visible slice of the layout. Null when
+     * the slice contains no spoken token.
+     */
+    fun tokenRangeForChars(charLo: Int, charHi: Int): IntRange? {
+        if (tokens.isEmpty() || charHi <= charLo) return null
+        // First token ending after charLo.
+        var lo = 0
+        var hi = tokens.size
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if (tokens[mid].charEnd <= charLo) lo = mid + 1 else hi = mid
+        }
+        val first = lo
+        // Last token starting before charHi.
+        lo = 0
+        hi = tokens.size
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if (tokens[mid].charStart < charHi) lo = mid + 1 else hi = mid
+        }
+        val last = lo - 1
+        return if (first <= last) first..last else null
+    }
+
     /** Index of the first token at or after a display-text char offset. */
     fun firstTokenAtOrAfter(charOffset: Int): Int {
         var lo = 0

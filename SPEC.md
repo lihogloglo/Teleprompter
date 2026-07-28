@@ -70,6 +70,11 @@ last confidently-spoken token.
   (configurable, e.g., ±150 tokens or whole script for short ones). A run of ≥N consecutive
   matching tokens (N≈3–4) re-anchors and resumes scrolling. This handles both **skipping
   ahead** and **jumping back to redo a line** (retake flow).
+- **The screen bounds every search:** a reader can only speak words they can see, so all
+  matching — forward scan, rejoin runs, and LOST recovery — is clamped to the tokens currently
+  visible on screen. An off-screen match is always a coincidence (a duplicated phrase), never
+  the reader; retakes/skips beyond the visible page are remote-key re-anchors. Additionally, a
+  successful forward match at the anchor outranks a completed run elsewhere.
 - **Silence:** no speech → freeze (trivially). Resume on matched speech. Optional "start on
   voice": session begins scrolling only when you start reading.
 - **Rate estimation:** rolling words-per-minute from match timestamps drives the scroll
@@ -327,6 +332,19 @@ later). Exit/back after a ≥10 s take shows the summary overlay first ("Back to
 "Done"); follow-mode sessions only.
 **Repo made public** (2026-07-27): README rewritten for outside readers, MIT license, release
 APK (v0.5.0, debug-key signed) published on GitHub Releases.
+**M5 slice 2 — screen-bounded matching + library cache** (2026-07-28, from device feedback:
+follow jumped to a far duplicate phrase; library re-walked the vault on every visit).
+Matcher: (1) forward match now outranks a completed rejoin run — reading a phrase that repeats
+elsewhere in the script no longer teleports the anchor; (2) new `Matcher.visibleTokens`:
+PrompterScreen reports the on-screen token range (layout lines → char offsets →
+`ScriptIndex.tokenRangeForChars`) before each feed, and every search (forward scan, rejoin
+window, LOST whole-script recovery) is clamped to it — a reader can only speak what they can
+see. Touch-free pass: a key press during countdown/armed now *starts* (the on-screen "Start
+now" is unreachable on a rig; cancel = start-then-pause), and any key on the session summary
+dismisses it instead of leaking into the prompter. Vault library: listing cached in memory +
+`vault-listing.tsv` on disk, shown instantly on entry (ebook-library pattern); the SAF walk
+revalidates in the background, is skipped when <60 s old, never lets an empty/failed walk
+clobber a good cache; ⋮ Refresh forces it. Deleting a local script no longer re-walks the vault.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

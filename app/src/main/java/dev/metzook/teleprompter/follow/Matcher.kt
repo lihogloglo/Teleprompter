@@ -92,6 +92,16 @@ class Matcher(
     var state = FollowState(tokensPerSec = config.initialRate)
         private set
 
+    /**
+     * Token range currently visible on screen, kept up to date by the UI.
+     * A reader can only speak words they can see, so every search — the
+     * forward scan and the rejoin run tracker, including LOST recovery —
+     * stays inside this range; an off-screen match is always a coincidence
+     * (a duplicated phrase), never the reader. Null = unconstrained
+     * (tests, or before the first layout).
+     */
+    var visibleTokens: IntRange? = null
+
     private var currentUtterance = -1
     private var consumedWords = 0
 
@@ -220,11 +230,15 @@ class Matcher(
         // Long skips must land on a content word — "the"/"it"/"de" appear
         // everywhere and would yank the anchor ahead on coincidences.
         var forward = -1
-        val from = anchor + 1
-        val to = min(tokens.size - 1, anchor + config.maxSkipAhead)
+        var from = anchor + 1
+        var to = min(tokens.size - 1, anchor + config.maxSkipAhead)
+        visibleTokens?.let { vis ->
+            from = max(from, vis.first)
+            to = min(to, vis.last)
+        }
         for (j in from..to) {
             if (!Fuzzy.matches(tokens[j].norm, norm)) continue
-            if (j - from <= config.smallSkip || norm.length >= config.contentLen) {
+            if (j - (anchor + 1) <= config.smallSkip || norm.length >= config.contentLen) {
                 forward = j
                 break
             }
@@ -235,9 +249,12 @@ class Matcher(
             (max(0, anchor - config.backRepeat)..anchor)
                 .any { Fuzzy.matches(tokens[it].norm, norm) }
 
+        // A forward match outranks a run jump: while the reading matches at the
+        // anchor, a completed run elsewhere is a duplicated phrase, not a jump.
+        // Genuine retakes/skips fail the forward scan, so the run still fires.
         when {
-            runTarget >= 0 -> applyMatch(runTarget, t, utterance, jump = true)
             forward >= 0 -> applyMatch(forward, t, utterance, jump = false)
+            runTarget >= 0 -> applyMatch(runTarget, t, utterance, jump = true)
             repeat -> recordOutcome(true)
             else -> {
                 recordOutcome(false)
@@ -285,10 +302,15 @@ class Matcher(
      * within a couple of words of continued reading.
      */
     private fun updateRuns(norm: String, anchor: Int, anyPosition: Boolean): Int {
-        // Lost = the anchor means nothing anymore: search the whole script.
+        // Lost = the anchor means nothing anymore: search everything the
+        // reader can currently see (the whole script when unconstrained).
         val lost = state.mode == FollowMode.LOST
-        val lo = if (lost) 0 else max(0, anchor - config.rejoinBack)
-        val hi = if (lost) tokens.size - 1 else min(tokens.size - 1, anchor + config.rejoinForward)
+        var lo = if (lost) 0 else max(0, anchor - config.rejoinBack)
+        var hi = if (lost) tokens.size - 1 else min(tokens.size - 1, anchor + config.rejoinForward)
+        visibleTokens?.let { vis ->
+            lo = max(lo, vis.first)
+            hi = min(hi, vis.last)
+        }
 
         val candidates = HashSet<Int>()
         index.positionsByNorm[norm]?.forEach { if (it in lo..hi) candidates += it }
@@ -300,8 +322,8 @@ class Matcher(
             }
         }
         if (anyPosition) {
-            val nearLo = max(0, anchor - 4)
-            val nearHi = min(tokens.size - 1, anchor + config.maxSkipAhead)
+            val nearLo = max(lo, anchor - 4)
+            val nearHi = min(hi, anchor + config.maxSkipAhead)
             for (j in nearLo..nearHi) {
                 if (j !in candidates && Fuzzy.matches(tokens[j].norm, norm)) candidates += j
             }

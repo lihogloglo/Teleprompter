@@ -102,11 +102,28 @@ fun LibraryScreen(
             vaultScripts = emptyList()
             vaultError = false
         } else {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { repo.vault.list(Uri.parse(uriString)) }
+            val uri = Uri.parse(uriString)
+            // Show the last known listing instantly; the slow SAF walk runs
+            // behind it and only replaces the list once it lands. The walk is
+            // skipped entirely when a recent one already ran (menu Refresh
+            // forces it via refreshTick).
+            val cached = withContext(Dispatchers.IO) { repo.vault.cached(uri) }
+            if (cached != null) {
+                vaultScripts = cached
+                vaultError = false
             }
-            vaultScripts = result.getOrDefault(emptyList())
-            vaultError = result.isFailure || (result.getOrNull()?.isEmpty() == true)
+            if (refreshTick > 0 || !repo.vault.isFresh(uri, maxAgeMs = 60_000)) {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching { repo.vault.list(uri) }
+                }
+                val fresh = result.getOrNull()
+                if (!fresh.isNullOrEmpty()) {
+                    vaultScripts = fresh
+                    vaultError = false
+                } else if (vaultScripts.isEmpty()) {
+                    vaultError = true
+                }
+            }
         }
     }
 
@@ -226,8 +243,11 @@ fun LibraryScreen(
                 TextButton(onClick = {
                     pendingDelete = null
                     scope.launch {
-                        withContext(Dispatchers.IO) { repo.local.delete(meta.id) }
-                        refreshTick++
+                        // Reload locals only — no reason to re-walk the vault.
+                        locals = withContext(Dispatchers.IO) {
+                            repo.local.delete(meta.id)
+                            repo.local.list()
+                        }
                     }
                 }) { Text("Delete") }
             },
