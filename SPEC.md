@@ -192,13 +192,29 @@ mirror: false
   v1 ships HID key mapping (center/prev/next slots); MediaSession for AVRCP-only remotes later.
 - All actions available as mappable commands (mirroring obsidian-teleprompter's
   everything-is-a-command approach).
+- **Voice command mode** (shipped M5 s4): "go back" spoken aloud = jump back, riding the same
+  ASR pipeline as follow mode. A mode of its own, mutually exclusive with follow-voice (one
+  interpretation of speech at a time); works paused or playing. Phrases per language
+  (en: "go back" / "jump back"; fr: "retour arrière" / "reviens en arrière"), normalized like
+  script tokens. No wake word, so a script containing the phrase will trigger it — the status
+  overlay always shows the active phrase. Detector is pure Kotlin (`follow/VoiceCommands.kt`),
+  fires once per occurrence, replay-tested.
 - Touch gestures are mappable too (shipped M1): double-tap and long-press each map to any
   prompter action; pinch resizes text (toggleable). Single tap = play/pause stays fixed.
 
-### 5.4 Classic mode (manual scrolling)
+### 5.4 Classic mode (manual scrolling) & the hand-wins invariant
 
 Full-featured timed scroller as fallback and for scripted-to-the-word delivery: WPM-based speed,
 tap to pause, swipe to seek, speed ramp. Voice-follow is a mode, not a requirement.
+
+**The hand always wins** (shipped M5 s4, from device feedback): in *every* mode and state, a
+finger on the reading surface owns the scroll. Touching the text halts the drive (grab), drags
+and flings run free — the drive must never cancel a fling or pull the text back — and wherever
+the reader lets the text settle becomes the new truth: classic mode resumes its timed scroll
+from there, and follow mode **re-anchors the matcher to the line under the eyeline**. The same
+re-anchor runs whenever follow-voice is toggled on, so follow always picks up from what's on
+screen, never from the top. Long-press ships unmapped by default for the same reason: holding
+a finger on the text is the grab gesture, not a command.
 
 ## 6. Quality-of-life features (brainstormed backlog)
 
@@ -366,6 +382,20 @@ which beats the system rotation lock; persisted, prompter-scoped, with `Auto` in
 a mappable *Rotate screen* action. `android:configChanges` keeps rotation from recreating the
 activity mid-take (scroll, matcher anchor and ASR engine all survive), and the scroll position
 is restored proportionally after the relayout. 180°-rotated rigs are covered by both mirrors.
+**M5 slice 4 — the hand always wins + voice command** (2026-07-30, from device feedback:
+manual scrolling in the prompter felt broken — flicks died instantly and follow mode dragged
+the screen back; toggling follow-voice restarted from the top). Root causes: the drive loop
+issued a same-priority `scrollBy` every frame (killing any user fling within one frame); the
+follow spring re-targeted a stale anchor no gesture ever updated; toggling follow never
+re-anchored (and could rebuild the matcher), leaving anchor −1 whose screen-bounded search
+window ∩ visible tokens = ∅ mid-script — unrecoverable until LOST; and long-press defaulted to
+RESTART, so the natural hold-to-grab gesture teleported to the top. Fixes (§5.4): new
+`UserScrollControl` (pointer-down + nested-scroll fling tracking + stuck-fling watchdog) parks
+the drive while the hand or its fling owns the scroll; on settle — and on every follow-voice
+toggle — the matcher re-anchors to the line under the eyeline (`reanchorToEyeline`); long-press
+default → *Nothing* (still mappable). New **voice command mode** (§5.3): pure-Kotlin
+`VoiceCommandDetector` on the same ASR stream, "go back"/"jump back" (fr "retour arrière")
+→ jump back, chip-toggled, exclusive with follow-voice, works paused or playing, 10 unit tests.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

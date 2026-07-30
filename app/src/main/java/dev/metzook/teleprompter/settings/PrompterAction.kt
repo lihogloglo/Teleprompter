@@ -22,7 +22,10 @@ enum class PrompterAction(val label: String) {
  */
 enum class GestureSlot(val label: String, val default: PrompterAction) {
     DOUBLE_TAP("Double tap", PrompterAction.JUMP_BACK),
-    LONG_PRESS("Long press", PrompterAction.RESTART),
+    // Default NONE on purpose: holding a finger on the text is the natural
+    // "grab the moving text" gesture, and a long-press action would fire mid-grab
+    // (RESTART here used to teleport readers to the top). Still fully mappable.
+    LONG_PRESS("Long press", PrompterAction.NONE),
     VOLUME_UP("Volume up", PrompterAction.SPEED_UP),
     VOLUME_DOWN("Volume down", PrompterAction.SPEED_DOWN),
     REMOTE_CENTER("Remote · OK / play key", PrompterAction.PLAY_PAUSE),

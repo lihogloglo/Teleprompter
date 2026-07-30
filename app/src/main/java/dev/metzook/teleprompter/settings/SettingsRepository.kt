@@ -42,6 +42,8 @@ data class PrompterSettings(
     val asrOverlay: Boolean = true,
     val asrModelId: String = "zipformer-en-20M",
     val followVoice: Boolean = false,
+    /** "Go back" voice command mode; mutually exclusive with [followVoice]. */
+    val voiceCommands: Boolean = false,
     // Margins are kept per orientation: the same rig crops portrait and
     // landscape by very different fractions.
     val marginsPortrait: FrameMargins = FrameMargins(),
@@ -64,6 +66,7 @@ class SettingsRepository(private val context: Context) {
     private val keyAsrOverlay = booleanPreferencesKey("asr_overlay")
     private val keyAsrModelId = stringPreferencesKey("asr_model_id")
     private val keyFollowVoice = booleanPreferencesKey("follow_voice")
+    private val keyVoiceCommands = booleanPreferencesKey("voice_commands")
     private val keyMarginHPortrait = floatPreferencesKey("margin_h_portrait")
     private val keyMarginVPortrait = floatPreferencesKey("margin_v_portrait")
     private val keyMarginHLandscape = floatPreferencesKey("margin_h_landscape")
@@ -85,6 +88,7 @@ class SettingsRepository(private val context: Context) {
             asrOverlay = p[keyAsrOverlay] ?: true,
             asrModelId = p[keyAsrModelId] ?: "zipformer-en-20M",
             followVoice = p[keyFollowVoice] ?: false,
+            voiceCommands = p[keyVoiceCommands] ?: false,
             marginsPortrait = FrameMargins(
                 h = p[keyMarginHPortrait] ?: 0f,
                 v = p[keyMarginVPortrait] ?: 0f,
@@ -148,6 +152,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setFollowVoice(value: Boolean) {
         context.dataStore.edit { it[keyFollowVoice] = value }
+    }
+
+    suspend fun setVoiceCommands(value: Boolean) {
+        context.dataStore.edit { it[keyVoiceCommands] = value }
     }
 
     suspend fun setMargins(landscape: Boolean, value: FrameMargins) {

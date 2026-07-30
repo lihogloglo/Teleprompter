@@ -120,6 +120,8 @@ import dev.metzook.teleprompter.follow.ScriptIndex
 import dev.metzook.teleprompter.follow.SessionStats
 import dev.metzook.teleprompter.follow.SessionStatsBuilder
 import dev.metzook.teleprompter.follow.SpokenSegment
+import dev.metzook.teleprompter.follow.VoiceCommand
+import dev.metzook.teleprompter.follow.VoiceCommandDetector
 import dev.metzook.teleprompter.settings.FrameMargins
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
@@ -194,6 +196,7 @@ fun PrompterScreen(
     var preferredModel by remember { mutableStateOf<AsrModel?>(null) }
     var asrOverlayOn by remember { mutableStateOf(true) }
     var followVoice by remember { mutableStateOf(false) }
+    var voiceCommands by remember { mutableStateOf(false) }
     var scriptLang by remember { mutableStateOf<String?>(null) }
     // Reading frame: kept per orientation, because the same rig crops a portrait
     // screen and a landscape one by very different fractions.
@@ -213,6 +216,8 @@ fun PrompterScreen(
         countdownSec = s.countdownSec
         asrOverlayOn = s.asrOverlay
         followVoice = s.followVoice
+        // Mutually exclusive modes; follow wins if both were somehow stored on.
+        voiceCommands = s.voiceCommands && !s.followVoice
         portraitMargins = s.marginsPortrait
         landscapeMargins = s.marginsLandscape
         orientationPref = s.orientation
@@ -239,7 +244,8 @@ fun PrompterScreen(
             }
             preferredModel = (listOfNotNull(byLang, AsrModels.byId(s.asrModelId)) + AsrModels.ALL)
                 .firstOrNull { modelManager.isInstalled(it) }
-            asrModel = if (s.asrOverlay || s.followVoice) preferredModel else null
+            asrModel =
+                if (s.asrOverlay || s.followVoice || s.voiceCommands) preferredModel else null
             parsed = p
             script = loadedScript
         }
@@ -301,6 +307,8 @@ fun PrompterScreen(
         )
     }
     val matcher = remember(scriptIndex) { Matcher(scriptIndex) }
+    // Voice commands ride the same ASR stream; language follows the script index.
+    val commandDetector = remember(scriptIndex) { VoiceCommandDetector(scriptIndex.lang) }
     var followState by remember(matcher) { mutableStateOf(matcher.state) }
     var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val density = LocalDensity.current
@@ -322,6 +330,9 @@ fun PrompterScreen(
     }
 
     val scrollState = rememberScrollState()
+    // The hand always wins (SPEC §5.4): while a finger holds the text — or the
+    // fling it launched is still running — the auto-scroll drive stays off.
+    val userScroll = rememberUserScrollControl(scrollState)
     var playing by remember { mutableStateOf(false) }
     // Start-on-voice: session armed, waiting for the first matched words.
     var armed by remember { mutableStateOf(false) }
@@ -379,29 +390,6 @@ fun PrompterScreen(
     }
     val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
     val followActive = followVoice && engine != null
-
-    // Feed the matcher only while delivering (or armed, waiting for the first
-    // words); speech during pause is skipped, so resuming never replays a backlog.
-    LaunchedEffect(engine, matcher) {
-        engine?.events?.collect { event ->
-            if (followVoice && (playing || armed)) {
-                matcher.visibleTokens = visibleTokenRange()
-                publishState(
-                    matcher.onWords(
-                        event.utterance,
-                        event.words,
-                        final = event is AsrEvent.Final,
-                    ),
-                )
-                if (armed && followState.anchor != armedAnchor) {
-                    armed = false
-                    playing = true
-                }
-            } else {
-                matcher.skip(event.utterance, event.words)
-            }
-        }
-    }
 
     LaunchedEffect(playing) {
         val now = System.currentTimeMillis()
@@ -537,6 +525,17 @@ fun PrompterScreen(
         publishState(matcher.state)
     }
 
+    // Wherever the reader puts the text is the new truth: anchor the matcher to
+    // the line under the eyeline, so follow resumes from the screen — never from
+    // the top, never from a stale position it would pull the text back to.
+    fun reanchorToEyeline() {
+        val layout = textLayout ?: return
+        // In text coordinates the eyeline sits exactly at the scroll offset
+        // (the top spacer height equals the eyeline offset — see the layout).
+        val line = layout.getLineForVerticalPosition(scrollState.value.toFloat())
+        reanchorTo(scriptIndex.firstTokenAtOrAfter(layout.getLineStart(line)))
+    }
+
     fun perform(action: PrompterAction) {
         when (action) {
             PrompterAction.NONE -> Unit
@@ -554,6 +553,58 @@ fun PrompterScreen(
             PrompterAction.FONT_DOWN -> adjustFont(-2f)
             PrompterAction.FRAME -> frameEditing = !frameEditing
             PrompterAction.ROTATE -> flipOrientation()
+        }
+    }
+
+    // Feed the matcher only while delivering (or armed, waiting for the first
+    // words); speech during pause is skipped, so resuming never replays a backlog.
+    // The command detector listens whenever its mode is on — "go back" must work
+    // paused or playing (the user is always in control).
+    LaunchedEffect(engine, matcher) {
+        engine?.events?.collect { event ->
+            if (followVoice && (playing || armed)) {
+                matcher.visibleTokens = visibleTokenRange()
+                publishState(
+                    matcher.onWords(
+                        event.utterance,
+                        event.words,
+                        final = event is AsrEvent.Final,
+                    ),
+                )
+                if (armed && followState.anchor != armedAnchor) {
+                    armed = false
+                    playing = true
+                }
+            } else {
+                matcher.skip(event.utterance, event.words)
+            }
+            // The end screen swallows keys and touch; voice commands too.
+            if (voiceCommands && !followVoice && summaryStats == null) {
+                for (cmd in commandDetector.onWords(event.utterance, event.words)) {
+                    when (cmd) {
+                        VoiceCommand.GO_BACK -> perform(PrompterAction.JUMP_BACK)
+                    }
+                }
+            }
+        }
+    }
+
+    // Follow-voice picks up from wherever the reader already is — never from
+    // the top. Runs when the chip turns on, and again if the matcher is rebuilt
+    // under it (e.g. a model change swaps the script index).
+    LaunchedEffect(matcher, followVoice) {
+        if (followVoice) reanchorToEyeline()
+    }
+
+    // Manual scroll is authoritative (SPEC §5.4): once the hand and its fling
+    // settle, follow re-anchors to the eyeline instead of pulling the text back
+    // to the stale anchor. Watching isScrollInProgress too closes the gap
+    // between finger-up and the fling's first frame.
+    LaunchedEffect(matcher) {
+        snapshotFlow { userScroll.busy || scrollState.isScrollInProgress }.collect { active ->
+            if (active || !userScroll.moved) return@collect
+            userScroll.moved = false
+            if (followVoice) reanchorToEyeline()
         }
     }
 
@@ -601,6 +652,11 @@ fun PrompterScreen(
             val now = withFrameNanos { it }
             val dt = ((now - last) / 1_000_000_000f).coerceIn(0f, 0.1f)
             last = now
+            // The hand always wins: while the reader holds the text or its
+            // fling is still running, the drive waits — it must never cancel a
+            // fling or drag the text back. On release, follow has re-anchored
+            // to the eyeline and classic mode resumes from where the text is.
+            if (userScroll.busy || scrollState.isScrollInProgress) continue
             if (followActive) {
                 val layout = textLayout
                 val st = followState
@@ -651,6 +707,7 @@ fun PrompterScreen(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .userScrollControl(userScroll)
             .pointerInput(doubleTapAction, longPressAction, frameEditing) {
                 // While framing, taps belong to the frame editor: a stray tap
                 // must not start the take.
@@ -816,6 +873,8 @@ fun PrompterScreen(
                         "following · $lang · ${followState.anchor + 1}/" +
                             "${scriptIndex.tokens.size} · ${asrState.decodeMs} ms"
                     followActive -> "waiting for your voice · $lang"
+                    voiceCommands ->
+                        "say “${commandDetector.hint}” to jump back · $lang"
                     else -> "listening · $lang · ${asrState.decodeMs} ms"
                 }
                 Column(
@@ -943,11 +1002,31 @@ fun PrompterScreen(
                 onFollowVoice = { on ->
                     followVoice = on
                     if (on) {
+                        // Exclusive with command mode: one interpretation of speech.
+                        if (voiceCommands) {
+                            voiceCommands = false
+                            scope.launch { settingsRepo.setVoiceCommands(false) }
+                        }
                         if (asrModel == null) asrModel = preferredModel
-                    } else if (!asrOverlayOn) {
+                    } else if (!asrOverlayOn && !voiceCommands) {
                         asrModel = null
                     }
                     scope.launch { settingsRepo.setFollowVoice(on) }
+                },
+                voiceCommands = voiceCommands,
+                voiceCommandPhrase = commandDetector.hint,
+                onVoiceCommands = { on ->
+                    voiceCommands = on
+                    if (on) {
+                        if (followVoice) {
+                            followVoice = false
+                            scope.launch { settingsRepo.setFollowVoice(false) }
+                        }
+                        if (asrModel == null) asrModel = preferredModel
+                    } else if (!asrOverlayOn && !followVoice) {
+                        asrModel = null
+                    }
+                    scope.launch { settingsRepo.setVoiceCommands(on) }
                 },
                 onPlay = ::togglePlay,
                 onRestart = ::restart,
@@ -987,6 +1066,9 @@ private fun ControlsPanel(
     followAvailable: Boolean,
     followVoice: Boolean,
     onFollowVoice: (Boolean) -> Unit,
+    voiceCommands: Boolean,
+    voiceCommandPhrase: String,
+    onVoiceCommands: (Boolean) -> Unit,
     onPlay: () -> Unit,
     onRestart: () -> Unit,
     onExit: () -> Unit,
@@ -1055,6 +1137,12 @@ private fun ControlsPanel(
                         selected = followVoice,
                         onClick = { onFollowVoice(!followVoice) },
                         label = { Text("Follow voice") },
+                    )
+                    // "Go back" by voice: same pipeline, exclusive with follow.
+                    FilterChip(
+                        selected = voiceCommands,
+                        onClick = { onVoiceCommands(!voiceCommands) },
+                        label = { Text("“$voiceCommandPhrase” by voice") },
                     )
                 }
                 // One press flips the screen — no rotation-lock detour.
