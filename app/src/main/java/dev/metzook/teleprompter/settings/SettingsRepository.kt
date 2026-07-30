@@ -10,6 +10,27 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
+/**
+ * Reading-frame inset per side, as a fraction of the screen — the phone is often
+ * bigger than the prompter glass it sits behind, so the text area shrinks to fit
+ * what the hood actually shows (SPEC §5.1). 0 = full screen, today's default.
+ */
+data class FrameMargins(val h: Float = 0f, val v: Float = 0f) {
+    val isSet: Boolean get() = h > 0.001f || v > 0.001f
+
+    companion object {
+        /** Per side; 0.35 still leaves 30 % of the screen to read in. */
+        const val MAX = 0.35f
+    }
+}
+
+/** Prompter screen orientation; overrides the system rotation lock while prompting. */
+enum class ScreenOrientation(val label: String) {
+    AUTO("Auto"),
+    PORTRAIT("Portrait"),
+    LANDSCAPE("Landscape"),
+}
+
 data class PrompterSettings(
     val wpm: Int = 140,
     val fontSizeSp: Float = 40f,
@@ -21,6 +42,11 @@ data class PrompterSettings(
     val asrOverlay: Boolean = true,
     val asrModelId: String = "zipformer-en-20M",
     val followVoice: Boolean = false,
+    // Margins are kept per orientation: the same rig crops portrait and
+    // landscape by very different fractions.
+    val marginsPortrait: FrameMargins = FrameMargins(),
+    val marginsLandscape: FrameMargins = FrameMargins(),
+    val orientation: ScreenOrientation = ScreenOrientation.AUTO,
     val gestures: Map<GestureSlot, PrompterAction> =
         GestureSlot.entries.associateWith { it.default },
 )
@@ -38,6 +64,11 @@ class SettingsRepository(private val context: Context) {
     private val keyAsrOverlay = booleanPreferencesKey("asr_overlay")
     private val keyAsrModelId = stringPreferencesKey("asr_model_id")
     private val keyFollowVoice = booleanPreferencesKey("follow_voice")
+    private val keyMarginHPortrait = floatPreferencesKey("margin_h_portrait")
+    private val keyMarginVPortrait = floatPreferencesKey("margin_v_portrait")
+    private val keyMarginHLandscape = floatPreferencesKey("margin_h_landscape")
+    private val keyMarginVLandscape = floatPreferencesKey("margin_v_landscape")
+    private val keyOrientation = stringPreferencesKey("orientation")
 
     private fun gestureKey(slot: GestureSlot) =
         stringPreferencesKey("gesture_${slot.name.lowercase()}")
@@ -54,6 +85,17 @@ class SettingsRepository(private val context: Context) {
             asrOverlay = p[keyAsrOverlay] ?: true,
             asrModelId = p[keyAsrModelId] ?: "zipformer-en-20M",
             followVoice = p[keyFollowVoice] ?: false,
+            marginsPortrait = FrameMargins(
+                h = p[keyMarginHPortrait] ?: 0f,
+                v = p[keyMarginVPortrait] ?: 0f,
+            ),
+            marginsLandscape = FrameMargins(
+                h = p[keyMarginHLandscape] ?: 0f,
+                v = p[keyMarginVLandscape] ?: 0f,
+            ),
+            orientation = p[keyOrientation]
+                ?.let { stored -> ScreenOrientation.entries.firstOrNull { it.name == stored } }
+                ?: ScreenOrientation.AUTO,
             gestures = GestureSlot.entries.associateWith { slot ->
                 p[gestureKey(slot)]
                     ?.let { stored -> PrompterAction.entries.firstOrNull { it.name == stored } }
@@ -106,5 +148,23 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setFollowVoice(value: Boolean) {
         context.dataStore.edit { it[keyFollowVoice] = value }
+    }
+
+    suspend fun setMargins(landscape: Boolean, value: FrameMargins) {
+        val h = value.h.coerceIn(0f, FrameMargins.MAX)
+        val v = value.v.coerceIn(0f, FrameMargins.MAX)
+        context.dataStore.edit {
+            if (landscape) {
+                it[keyMarginHLandscape] = h
+                it[keyMarginVLandscape] = v
+            } else {
+                it[keyMarginHPortrait] = h
+                it[keyMarginVPortrait] = v
+            }
+        }
+    }
+
+    suspend fun setOrientation(value: ScreenOrientation) {
+        context.dataStore.edit { it[keyOrientation] = value.name }
     }
 }

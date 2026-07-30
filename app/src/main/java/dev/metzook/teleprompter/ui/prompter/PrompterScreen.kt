@@ -3,7 +3,9 @@
 package dev.metzook.teleprompter.ui.prompter
 
 import android.Manifest
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
@@ -25,6 +27,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,13 +39,16 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -75,15 +83,20 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -107,8 +120,10 @@ import dev.metzook.teleprompter.follow.ScriptIndex
 import dev.metzook.teleprompter.follow.SessionStats
 import dev.metzook.teleprompter.follow.SessionStatsBuilder
 import dev.metzook.teleprompter.follow.SpokenSegment
+import dev.metzook.teleprompter.settings.FrameMargins
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
+import dev.metzook.teleprompter.settings.ScreenOrientation
 import dev.metzook.teleprompter.settings.SettingsRepository
 import dev.metzook.teleprompter.vault.MarkdownParser
 import dev.metzook.teleprompter.vault.ParsedScript
@@ -180,6 +195,16 @@ fun PrompterScreen(
     var asrOverlayOn by remember { mutableStateOf(true) }
     var followVoice by remember { mutableStateOf(false) }
     var scriptLang by remember { mutableStateOf<String?>(null) }
+    // Reading frame: kept per orientation, because the same rig crops a portrait
+    // screen and a landscape one by very different fractions.
+    var portraitMargins by remember { mutableStateOf(FrameMargins()) }
+    var landscapeMargins by remember { mutableStateOf(FrameMargins()) }
+    var frameEditing by remember { mutableStateOf(false) }
+    var orientationPref by remember { mutableStateOf(ScreenOrientation.AUTO) }
+
+    val isLandscape =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val margins = if (isLandscape) landscapeMargins else portraitMargins
 
     LaunchedEffect(scriptId) {
         val s = settingsRepo.settings.first()
@@ -188,6 +213,9 @@ fun PrompterScreen(
         countdownSec = s.countdownSec
         asrOverlayOn = s.asrOverlay
         followVoice = s.followVoice
+        portraitMargins = s.marginsPortrait
+        landscapeMargins = s.marginsLandscape
+        orientationPref = s.orientation
         val loadedScript = withContext(Dispatchers.IO) { repo.load(scriptId) }
         if (loadedScript != null) {
             val p = withContext(Dispatchers.Default) { MarkdownParser.parse(loadedScript.body) }
@@ -233,6 +261,20 @@ fun PrompterScreen(
         onDispose {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             insets?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // An app-requested orientation beats the system rotation lock, so the
+    // prompter can go landscape on a phone pinned to portrait (and back).
+    // Prompter-only: the library and settings keep the device's own behaviour.
+    DisposableEffect(activity, orientationPref) {
+        activity?.requestedOrientation = when (orientationPref) {
+            ScreenOrientation.AUTO -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            ScreenOrientation.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            ScreenOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -375,6 +417,62 @@ fun PrompterScreen(
         fontSp = (fontSp + delta).coerceIn(24f, 72f)
     }
 
+    fun setMargins(value: FrameMargins) {
+        val clamped = FrameMargins(
+            h = value.h.coerceIn(0f, FrameMargins.MAX),
+            v = value.v.coerceIn(0f, FrameMargins.MAX),
+        )
+        if (isLandscape) landscapeMargins = clamped else portraitMargins = clamped
+    }
+
+    // Drag deltas are applied to the live value, not the one captured at the
+    // last composition: several drag events can land within a single frame.
+    fun nudgeMargins(dh: Float, dv: Float) {
+        val current = if (isLandscape) landscapeMargins else portraitMargins
+        setMargins(FrameMargins(current.h + dh, current.v + dv))
+    }
+
+    /** One press flips to the other orientation — whatever the rotation lock says. */
+    fun flipOrientation() {
+        val next =
+            if (isLandscape) ScreenOrientation.PORTRAIT else ScreenOrientation.LANDSCAPE
+        orientationPref = next
+        scope.launch { settingsRepo.setOrientation(next) }
+    }
+
+    // Dragging a frame edge fires continuously; persist the result, not the drag.
+    LaunchedEffect(ready) {
+        if (!ready) return@LaunchedEffect
+        snapshotFlow { portraitMargins }.drop(1).debounce(400).collect {
+            settingsRepo.setMargins(landscape = false, value = it)
+        }
+    }
+    LaunchedEffect(ready) {
+        if (!ready) return@LaunchedEffect
+        snapshotFlow { landscapeMargins }.drop(1).debounce(400).collect {
+            settingsRepo.setMargins(landscape = true, value = it)
+        }
+    }
+
+    // Rotating relayouts the script: hold the reader's place in the text instead
+    // of wherever the old pixel offset happens to land in the new layout.
+    var scrollFraction by remember { mutableFloatStateOf(0f) }
+    var restoringScroll by remember { mutableStateOf(false) }
+    LaunchedEffect(scrollState) {
+        snapshotFlow { scrollState.value to scrollState.maxValue }.collect { (value, max) ->
+            if (!restoringScroll && max > 0) scrollFraction = value.toFloat() / max
+        }
+    }
+    LaunchedEffect(isLandscape) {
+        val target = scrollFraction
+        if (target <= 0f) return@LaunchedEffect
+        restoringScroll = true
+        // Let the new layout settle before mapping the fraction back to pixels.
+        repeat(4) { withFrameNanos { } }
+        scrollState.scrollTo((target * scrollState.maxValue).roundToInt())
+        restoringScroll = false
+    }
+
     fun startCountdown() {
         if (countdownSec > 0) {
             countdownJob = scope.launch {
@@ -454,6 +552,8 @@ fun PrompterScreen(
             PrompterAction.SPEED_DOWN -> adjustWpm(-10)
             PrompterAction.FONT_UP -> adjustFont(2f)
             PrompterAction.FONT_DOWN -> adjustFont(-2f)
+            PrompterAction.FRAME -> frameEditing = !frameEditing
+            PrompterAction.ROTATE -> flipOrientation()
         }
     }
 
@@ -551,8 +651,10 @@ fun PrompterScreen(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .onSizeChanged { viewportPx = it.height }
-            .pointerInput(doubleTapAction, longPressAction) {
+            .pointerInput(doubleTapAction, longPressAction, frameEditing) {
+                // While framing, taps belong to the frame editor: a stray tap
+                // must not start the take.
+                if (frameEditing) return@pointerInput
                 detectTapGestures(
                     onTap = { togglePlay() },
                     onDoubleTap =
@@ -585,86 +687,14 @@ fun PrompterScreen(
                 }
             },
     ) {
-        val topSpacer = maxHeight * EYELINE_FRACTION
-        val bottomSpacer = maxHeight * (1f - EYELINE_FRACTION)
-
-        // Everything a physical rig would mirror lives inside this layer.
-        Box(
-            Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = if (mirrorH) -1f else 1f
-                    scaleY = if (mirrorV) -1f else 1f
-                },
-        ) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState),
-            ) {
-                Spacer(Modifier.height(topSpacer))
-                Text(
-                    text = annotated,
-                    color = Color.White,
-                    fontSize = fontSp.sp,
-                    lineHeight = (fontSp * 1.4f).sp,
-                    fontWeight = FontWeight.Medium,
-                    onTextLayout = { textLayout = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 28.dp)
-                        .onSizeChanged { contentHeightPx = it.height },
-                )
-                Spacer(Modifier.height(bottomSpacer))
-            }
-
-            // Follow-state feedback (SPEC §5.1): the eyeline marker dims while
-            // frozen on improv, pulses when lost, and comes back on rejoin.
-            val frozen = followActive && followState.mode == FollowMode.FROZEN
-            val lost = followActive && followState.mode == FollowMode.LOST
-            val markerAlpha = if (lost) {
-                rememberInfiniteTransition(label = "lost").animateFloat(
-                    initialValue = 0.25f,
-                    targetValue = 0.95f,
-                    animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
-                    label = "lostPulse",
-                ).value
-            } else if (frozen) 0.5f else 0.9f
-            Canvas(Modifier.fillMaxSize()) {
-                val y = size.height * EYELINE_FRACTION
-                drawLine(
-                    color = Color.White.copy(alpha = 0.06f),
-                    start = Offset(0f, y),
-                    end = Offset(size.width, y),
-                    strokeWidth = 2.dp.toPx(),
-                )
-                val h = 14.dp.toPx()
-                val w = 10.dp.toPx()
-                val marker = Path().apply {
-                    moveTo(0f, y - h / 2)
-                    lineTo(w, y)
-                    lineTo(0f, y + h / 2)
-                    close()
-                }
-                drawPath(
-                    marker,
-                    color = if (frozen) Color(0xFF8F8F8F) else Color(0xFFFFC24B),
-                    alpha = markerAlpha,
-                )
-            }
-        }
-
-        val progress =
-            if (scrollState.maxValue > 0) scrollState.value.toFloat() / scrollState.maxValue else 0f
-        if (progress > 0f) {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .fillMaxHeight(progress)
-                    .width(3.dp)
-                    .background(Color.White.copy(alpha = 0.25f)),
-            )
-        }
+        // The reading frame (SPEC §5.1): a phone is often bigger than the
+        // prompter glass it sits behind, so everything the reader must see —
+        // text, eyeline, countdown, status — is inset into the visible area.
+        val insetX = maxWidth * margins.h
+        val insetY = maxHeight * margins.v
+        val frameHeight = maxHeight - insetY * 2
+        val topSpacer = frameHeight * EYELINE_FRACTION
+        val bottomSpacer = frameHeight * (1f - EYELINE_FRACTION)
 
         // Remaining time from measured live rate when following, else from WPM.
         val remainingSec = when {
@@ -674,105 +704,206 @@ fun PrompterScreen(
             pxPerSec > 0f -> ((scrollState.maxValue - scrollState.value) / pxPerSec).roundToInt()
             else -> 0
         }
-        if (playing) {
-            Text(
-                formatTime(remainingSec),
-                color = Color.White.copy(alpha = 0.35f),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp),
-            )
-        }
 
-        if (engine != null) {
-            // Always name the active language — a wrong-model session must be
-            // visible at a glance, not a silent failure to follow.
-            val lang = asrModel?.lang ?: "?"
-            val statusText = when {
-                asrState.error != null -> asrState.error
-                !asrState.listening -> "starting…"
-                followActive && followState.mode == FollowMode.LOST ->
-                    "lost · read any line, or use the remote"
-                followActive && followState.mode == FollowMode.FROZEN -> "improv · holding · $lang"
-                followActive && followState.anchor >= 0 ->
-                    "following · $lang · ${followState.anchor + 1}/${scriptIndex.tokens.size}" +
-                        " · ${asrState.decodeMs} ms"
-                followActive -> "waiting for your voice · $lang"
-                else -> "listening · $lang · ${asrState.decodeMs} ms"
-            }
-            Column(
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = insetX, vertical = insetY)
+                .onSizeChanged { viewportPx = it.height },
+        ) {
+            // Everything a physical rig would mirror lives inside this layer.
+            Box(
                 Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 12.dp, bottom = 12.dp, end = 80.dp),
-            ) {
-                Text(
-                    "● $statusText",
-                    color = if (asrState.listening) {
-                        Color(0xFF7CCB7C).copy(alpha = 0.7f)
-                    } else {
-                        Color.White.copy(alpha = 0.4f)
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = if (mirrorH) -1f else 1f
+                        scaleY = if (mirrorV) -1f else 1f
                     },
-                    style = MaterialTheme.typography.labelSmall,
-                )
-                val line = asrState.partial.ifBlank { asrState.lastFinal }
-                if (asrOverlayOn && line.isNotBlank()) {
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState),
+                ) {
+                    Spacer(Modifier.height(topSpacer))
                     Text(
-                        line.takeLast(120),
-                        color = Color.White.copy(
-                            alpha = if (asrState.partial.isNotBlank()) 0.6f else 0.35f,
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
+                        text = annotated,
+                        color = Color.White,
+                        fontSize = fontSp.sp,
+                        lineHeight = (fontSp * 1.4f).sp,
+                        fontWeight = FontWeight.Medium,
+                        onTextLayout = { textLayout = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 28.dp)
+                            .onSizeChanged { contentHeightPx = it.height },
+                    )
+                    Spacer(Modifier.height(bottomSpacer))
+                }
+
+                // Follow-state feedback (SPEC §5.1): the eyeline marker dims while
+                // frozen on improv, pulses when lost, and comes back on rejoin.
+                val frozen = followActive && followState.mode == FollowMode.FROZEN
+                val lost = followActive && followState.mode == FollowMode.LOST
+                val markerAlpha = if (lost) {
+                    rememberInfiniteTransition(label = "lost").animateFloat(
+                        initialValue = 0.25f,
+                        targetValue = 0.95f,
+                        animationSpec = infiniteRepeatable(tween(500), RepeatMode.Reverse),
+                        label = "lostPulse",
+                    ).value
+                } else if (frozen) 0.5f else 0.9f
+                Canvas(Modifier.fillMaxSize()) {
+                    val y = size.height * EYELINE_FRACTION
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.06f),
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 2.dp.toPx(),
+                    )
+                    val h = 14.dp.toPx()
+                    val w = 10.dp.toPx()
+                    val marker = Path().apply {
+                        moveTo(0f, y - h / 2)
+                        lineTo(w, y)
+                        lineTo(0f, y + h / 2)
+                        close()
+                    }
+                    drawPath(
+                        marker,
+                        color = if (frozen) Color(0xFF8F8F8F) else Color(0xFFFFC24B),
+                        alpha = markerAlpha,
                     )
                 }
             }
-        }
 
-        if (countdown > 0) {
-            Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    "$countdown",
-                    color = Color.White,
-                    fontSize = 96.sp,
-                    fontWeight = FontWeight.Bold,
+            val progress = if (scrollState.maxValue > 0) {
+                scrollState.value.toFloat() / scrollState.maxValue
+            } else 0f
+            if (progress > 0f) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .fillMaxHeight(progress)
+                        .width(3.dp)
+                        .background(Color.White.copy(alpha = 0.25f)),
                 )
-                TextButton(onClick = {
-                    countdownJob?.cancel()
-                    countdown = 0
-                    playing = true
-                }) {
-                    Text("Start now", color = Color.White.copy(alpha = 0.7f))
+            }
+
+            if (playing) {
+                Text(
+                    formatTime(remainingSec),
+                    color = Color.White.copy(alpha = 0.35f),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(12.dp),
+                )
+            }
+
+            if (engine != null) {
+                // Always name the active language — a wrong-model session must be
+                // visible at a glance, not a silent failure to follow.
+                val lang = asrModel?.lang ?: "?"
+                val statusText = when {
+                    asrState.error != null -> asrState.error
+                    !asrState.listening -> "starting…"
+                    followActive && followState.mode == FollowMode.LOST ->
+                        "lost · read any line, or use the remote"
+                    followActive && followState.mode == FollowMode.FROZEN ->
+                        "improv · holding · $lang"
+                    followActive && followState.anchor >= 0 ->
+                        "following · $lang · ${followState.anchor + 1}/" +
+                            "${scriptIndex.tokens.size} · ${asrState.decodeMs} ms"
+                    followActive -> "waiting for your voice · $lang"
+                    else -> "listening · $lang · ${asrState.decodeMs} ms"
+                }
+                Column(
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = 12.dp, end = 80.dp),
+                ) {
+                    Text(
+                        "● $statusText",
+                        color = if (asrState.listening) {
+                            Color(0xFF7CCB7C).copy(alpha = 0.7f)
+                        } else {
+                            Color.White.copy(alpha = 0.4f)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    val line = asrState.partial.ifBlank { asrState.lastFinal }
+                    if (asrOverlayOn && line.isNotBlank()) {
+                        Text(
+                            line.takeLast(120),
+                            color = Color.White.copy(
+                                alpha = if (asrState.partial.isNotBlank()) 0.6f else 0.35f,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                        )
+                    }
+                }
+            }
+
+            if (countdown > 0) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "$countdown",
+                        color = Color.White,
+                        fontSize = 96.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    TextButton(onClick = {
+                        countdownJob?.cancel()
+                        countdown = 0
+                        playing = true
+                    }) {
+                        Text("Start now", color = Color.White.copy(alpha = 0.7f))
+                    }
+                }
+            }
+
+            if (armed) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "Speak to start",
+                        color = Color.White.copy(alpha = 0.75f),
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    TextButton(onClick = {
+                        armed = false
+                        playing = true
+                    }) {
+                        Text("Start now", color = Color.White.copy(alpha = 0.7f))
+                    }
                 }
             }
         }
 
-        if (armed) {
-            Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    "Speak to start",
-                    color = Color.White.copy(alpha = 0.75f),
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                TextButton(onClick = {
-                    armed = false
-                    playing = true
-                }) {
-                    Text("Start now", color = Color.White.copy(alpha = 0.7f))
-                }
-            }
+        if (frameEditing) {
+            FrameEditor(
+                margins = margins,
+                insetX = insetX,
+                insetY = insetY,
+                widthPx = with(density) { maxWidth.toPx() },
+                heightPx = with(density) { maxHeight.toPx() },
+                onNudge = ::nudgeMargins,
+                onReset = { setMargins(FrameMargins()) },
+                onDone = { frameEditing = false },
+            )
         }
 
         AnimatedVisibility(
-            visible = !playing && countdown == 0 && !armed,
+            visible = !playing && countdown == 0 && !armed && !frameEditing,
             modifier = Modifier.align(Alignment.BottomCenter),
             enter = fadeIn() + slideInVertically { it / 2 },
             exit = fadeOut() + slideOutVertically { it / 2 },
@@ -797,6 +928,10 @@ fun PrompterScreen(
                     mirrorV = it
                     scope.launch { settingsRepo.setMirrorV(it) }
                 },
+                landscape = isLandscape,
+                onFlipOrientation = ::flipOrientation,
+                margins = margins,
+                onEditFrame = { frameEditing = true },
                 countdownSec = countdownSec,
                 onCountdownCycle = {
                     val idx = COUNTDOWN_CYCLE.indexOf(countdownSec)
@@ -843,6 +978,10 @@ private fun ControlsPanel(
     onMirrorH: (Boolean) -> Unit,
     mirrorV: Boolean,
     onMirrorV: (Boolean) -> Unit,
+    landscape: Boolean,
+    onFlipOrientation: () -> Unit,
+    margins: FrameMargins,
+    onEditFrame: () -> Unit,
     countdownSec: Int,
     onCountdownCycle: () -> Unit,
     followAvailable: Boolean,
@@ -918,6 +1057,24 @@ private fun ControlsPanel(
                         label = { Text("Follow voice") },
                     )
                 }
+                // One press flips the screen — no rotation-lock detour.
+                FilterChip(
+                    selected = false,
+                    onClick = onFlipOrientation,
+                    label = { Text(if (landscape) "⟳ Portrait" else "⟳ Landscape") },
+                )
+                FilterChip(
+                    selected = margins.isSet,
+                    onClick = onEditFrame,
+                    label = {
+                        Text(
+                            if (margins.isSet) {
+                                "Frame ${(margins.h * 100).roundToInt()}" +
+                                    " / ${(margins.v * 100).roundToInt()}%"
+                            } else "Frame"
+                        )
+                    },
+                )
                 FilterChip(
                     selected = mirrorH,
                     onClick = { onMirrorH(!mirrorH) },
@@ -944,6 +1101,134 @@ private fun ControlsPanel(
             }
         }
     }
+}
+
+/**
+ * Frame adjuster: drag any edge until the text sits inside the prompter glass.
+ * Margins are symmetric — the phone is centred in the hood — so one edge moves
+ * both sides, and the area that will be cropped away is dimmed while dragging.
+ */
+@Composable
+private fun BoxScope.FrameEditor(
+    margins: FrameMargins,
+    insetX: Dp,
+    insetY: Dp,
+    widthPx: Float,
+    heightPx: Float,
+    onNudge: (dh: Float, dv: Float) -> Unit,
+    onReset: () -> Unit,
+    onDone: () -> Unit,
+) {
+    val accent = Color(0xFFFFC24B)
+    val grab = 48.dp
+
+    Canvas(Modifier.fillMaxSize()) {
+        val l = size.width * margins.h
+        val t = size.height * margins.v
+        val scrim = Color.Black.copy(alpha = 0.55f)
+        drawRect(scrim, size = Size(size.width, t))
+        drawRect(scrim, topLeft = Offset(0f, size.height - t), size = Size(size.width, t))
+        drawRect(scrim, topLeft = Offset(0f, t), size = Size(l, size.height - 2 * t))
+        drawRect(
+            scrim,
+            topLeft = Offset(size.width - l, t),
+            size = Size(l, size.height - 2 * t),
+        )
+        drawRect(
+            color = accent.copy(alpha = 0.9f),
+            topLeft = Offset(l, t),
+            size = Size(size.width - 2 * l, size.height - 2 * t),
+            style = Stroke(
+                width = 2.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(
+                    floatArrayOf(14.dp.toPx(), 10.dp.toPx()),
+                ),
+            ),
+        )
+    }
+
+    // Handles hug the inside of their edge, so they stay on-screen and on the
+    // line at any margin — including zero.
+    Box(
+        Modifier
+            .align(Alignment.CenterStart)
+            .offset(x = insetX)
+            .size(width = grab, height = 160.dp)
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { onNudge(it / widthPx, 0f) },
+            ),
+        contentAlignment = Alignment.CenterStart,
+    ) { Grip(accent, tall = true) }
+    Box(
+        Modifier
+            .align(Alignment.CenterEnd)
+            .offset(x = -insetX)
+            .size(width = grab, height = 160.dp)
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { onNudge(-it / widthPx, 0f) },
+            ),
+        contentAlignment = Alignment.CenterEnd,
+    ) { Grip(accent, tall = true) }
+    Box(
+        Modifier
+            .align(Alignment.TopCenter)
+            .offset(y = insetY)
+            .size(width = 160.dp, height = grab)
+            .draggable(
+                orientation = Orientation.Vertical,
+                state = rememberDraggableState { onNudge(0f, it / heightPx) },
+            ),
+        contentAlignment = Alignment.TopCenter,
+    ) { Grip(accent, tall = false) }
+    Box(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .offset(y = -insetY)
+            .size(width = 160.dp, height = grab)
+            .draggable(
+                orientation = Orientation.Vertical,
+                state = rememberDraggableState { onNudge(0f, -it / heightPx) },
+            ),
+        contentAlignment = Alignment.BottomCenter,
+    ) { Grip(accent, tall = false) }
+
+    Surface(
+        color = Color(0xF2161616),
+        contentColor = Color.White,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .align(Alignment.TopStart)
+            .statusBarsPadding()
+            .padding(12.dp),
+    ) {
+        Column(Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp)) {
+            Text("Drag an edge to fit the glass", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Margins ${(margins.h * 100).roundToInt()} % side · " +
+                    "${(margins.v * 100).roundToInt()} % top",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.6f),
+            )
+            Row {
+                TextButton(onClick = onReset) { Text("Reset") }
+                TextButton(onClick = onDone) { Text("Done") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Grip(color: Color, tall: Boolean) {
+    Box(
+        Modifier
+            .then(
+                if (tall) Modifier.width(6.dp).height(110.dp)
+                else Modifier.height(6.dp).width(110.dp),
+            )
+            .background(color, RoundedCornerShape(3.dp)),
+    )
 }
 
 private fun formatTime(totalSec: Int): String {

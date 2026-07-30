@@ -11,6 +11,8 @@ enum class PrompterAction(val label: String) {
     SPEED_DOWN("Speed down"),
     FONT_UP("Bigger text"),
     FONT_DOWN("Smaller text"),
+    FRAME("Adjust frame"),
+    ROTATE("Rotate screen"),
 }
 
 /**

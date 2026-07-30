@@ -146,7 +146,18 @@ mirror: false
 
 ### 5.1 Reading surface
 
-- Immersive fullscreen, black background default, high-contrast text. Portrait *and* landscape.
+- Immersive fullscreen, black background default, high-contrast text. Portrait *and* landscape,
+  switched by a **one-press flip** in the controls (shipped M5 s3). The app-requested
+  orientation overrides the system rotation lock, so a phone pinned to portrait still prompts
+  in landscape; the setting is prompter-only and the choice persists. Rotation is handled
+  in-process (`configChanges`) — a take is never restarted by turning the phone — and the
+  reading position is carried across the relayout as a fraction of the script.
+- **Reading frame** (shipped M5 s3): the phone is often bigger than the prompter glass it sits
+  behind, so the reading area is inset by a per-side margin (0–35 % of width/height). Text,
+  eyeline, countdown, status and progress all live inside the frame. Margins are stored *per
+  orientation* — the same rig crops portrait and landscape by very different fractions — and
+  are set by dragging the frame edges ("Frame" chip, or any gesture/remote key mapped to
+  *Adjust frame*), with the cropped-away area dimmed while adjusting.
 - **Eyeline indicator**: fixed reading band in the upper third (configurable position); the
   anchor line is held inside it. Text outside the band optionally dimmed (focus gradient).
 - Current position feedback: subtle — e.g., already-spoken text slightly dimmed. **No
@@ -345,6 +356,16 @@ dismisses it instead of leaking into the prompter. Vault library: listing cached
 `vault-listing.tsv` on disk, shown instantly on entry (ebook-library pattern); the SAF walk
 revalidates in the background, is skipped when <60 s old, never lets an empty/failed walk
 clobber a good cache; ⋮ Refresh forces it. Deleting a local script no longer re-walks the vault.
+**M5 slice 3 — fitting the rig** (2026-07-30, user request): two setup-time QoL features.
+(1) **Reading frame** — margins inset the whole reading surface (text, eyeline, countdown,
+ASR status, progress bar) so the prompt fits a glass smaller than the screen; symmetric per
+side, capped at 35 %, stored per orientation, adjusted by dragging any of four edge handles
+with the cropped area dimmed. Also a mappable action (*Adjust frame*), and reset from Settings.
+(2) **Orientation flip** — one chip press swaps portrait/landscape via `requestedOrientation`,
+which beats the system rotation lock; persisted, prompter-scoped, with `Auto` in Settings and
+a mappable *Rotate screen* action. `android:configChanges` keeps rotation from recreating the
+activity mid-take (scroll, matcher anchor and ASR engine all survive), and the scroll position
+is restored proportionally after the relayout. 180°-rotated rigs are covered by both mirrors.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

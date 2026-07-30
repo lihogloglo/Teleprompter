@@ -39,6 +39,10 @@ Prompting
 - Classic timed scrolling (WPM-based) as fallback and manual mode
 - Eyeline marker with follow-state feedback: following, holding on improv, lost
 - Mirror mode (horizontal and vertical) for beam-splitter rigs
+- Adjustable reading frame: drag the edges to inset the text until it fits a prompter glass
+  smaller than the phone screen — margins are remembered per orientation
+- One-press portrait/landscape flip that overrides the system rotation lock, and rotating
+  mid-session never restarts the take
 - Pinch to resize text, immersive fullscreen, keep-screen-on
 
 Hands-free control

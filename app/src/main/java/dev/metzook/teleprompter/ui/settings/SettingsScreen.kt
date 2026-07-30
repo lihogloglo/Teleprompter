@@ -44,14 +44,21 @@ import androidx.compose.ui.unit.dp
 import dev.metzook.teleprompter.asr.AsrModel
 import dev.metzook.teleprompter.asr.AsrModels
 import dev.metzook.teleprompter.asr.ModelManager
+import dev.metzook.teleprompter.settings.FrameMargins
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
 import dev.metzook.teleprompter.settings.PrompterSettings
+import dev.metzook.teleprompter.settings.ScreenOrientation
 import dev.metzook.teleprompter.settings.SettingsRepository
 import dev.metzook.teleprompter.ui.prompter.START_ON_VOICE
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 private val COUNTDOWN_CHOICES = listOf(0, 1, 2, 3, 5, START_ON_VOICE)
+
+private fun FrameMargins.describe(): String =
+    if (!isSet) "full screen"
+    else "${(h * 100).roundToInt()} % / ${(v * 100).roundToInt()} %"
 
 @Composable
 fun SettingsScreen(
@@ -128,6 +135,50 @@ fun SettingsScreen(
                         },
                     )
                 }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("Screen orientation", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Applies while prompting only, and overrides the system rotation lock — " +
+                    "a phone locked to portrait still goes landscape here. The prompter's " +
+                    "controls have a one-press flip.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ScreenOrientation.entries.forEach { option ->
+                    FilterChip(
+                        selected = settings.orientation == option,
+                        onClick = { scope.launch { settingsRepo.setOrientation(option) } },
+                        label = { Text(option.label) },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("Reading frame", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Margins keep the text inside a prompter glass smaller than the screen. " +
+                    "Set them by dragging the edges: \"Frame\" in the prompter's controls. " +
+                    "Portrait ${settings.marginsPortrait.describe()}, " +
+                    "landscape ${settings.marginsLandscape.describe()}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        settingsRepo.setMargins(landscape = false, value = FrameMargins())
+                        settingsRepo.setMargins(landscape = true, value = FrameMargins())
+                    }
+                },
+                enabled = settings.marginsPortrait.isSet || settings.marginsLandscape.isSet,
+            ) {
+                Text("Reset margins")
             }
 
             SectionHeader("Voice")
