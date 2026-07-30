@@ -9,87 +9,80 @@ class VoiceCommandsTest {
         ws.mapIndexed { i, w -> TimedWord(w, i * 0.3f) }
 
     @Test
-    fun firesOnCompletedPhrase() {
+    fun firesOnCommandWord() {
         val d = VoiceCommandDetector(MatchLang.EN)
         assertEquals(
             listOf(VoiceCommand.GO_BACK),
-            d.onWords(0, words("please", "go", "back")),
+            d.onWords(0, words("please", "rewind")),
         )
     }
 
     @Test
     fun normalizesCaseAndPunctuation() {
         val d = VoiceCommandDetector(MatchLang.EN)
-        assertEquals(
-            listOf(VoiceCommand.GO_BACK),
-            d.onWords(0, words("Go", "BACK!")),
-        )
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("REWIND!")))
     }
 
     @Test
     fun firesOncePerOccurrenceAcrossGrowingPartials() {
         val d = VoiceCommandDetector(MatchLang.EN)
-        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("go")))
-        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("go", "back")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("okay")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("okay", "rewind")))
         // The partial repeats the utterance so far: the same occurrence must not re-fire.
-        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("go", "back")))
-        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("go", "back", "now")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("okay", "rewind")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("okay", "rewind", "now")))
     }
 
     @Test
     fun firesAgainOnASecondOccurrence() {
         val d = VoiceCommandDetector(MatchLang.EN)
-        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("go", "back")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("rewind")))
         assertEquals(
             listOf(VoiceCommand.GO_BACK),
-            d.onWords(0, words("go", "back", "go", "back")),
+            d.onWords(0, words("rewind", "rewind")),
         )
     }
 
     @Test
-    fun bothOccurrencesInOneEvent() {
+    fun shortCommandWordsMatchExactlyOnly() {
         val d = VoiceCommandDetector(MatchLang.EN)
-        assertEquals(
-            listOf(VoiceCommand.GO_BACK, VoiceCommand.GO_BACK),
-            d.onWords(0, words("go", "back", "uh", "go", "back")),
-        )
+        // "rewind" is under the fuzzy length: one-edit neighbours must not fire.
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("remind", "me")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(1, words("rewinding", "it")))
     }
 
     @Test
-    fun ignoresEmbeddedAndPartialWords() {
-        val d = VoiceCommandDetector(MatchLang.EN)
-        // "backpack" is not "back"; "go" alone is not the phrase.
-        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("go", "backpack")))
-        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("lets", "go", "home")))
-    }
-
-    @Test
-    fun alternatePhraseFires() {
-        val d = VoiceCommandDetector(MatchLang.EN)
-        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("jump", "back")))
-    }
-
-    @Test
-    fun frenchPhraseWithDiacritics() {
+    fun frenchCommandToleratesInflectionsAndDiacritics() {
         val d = VoiceCommandDetector(MatchLang.FR)
-        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("retour", "arrière")))
-        assertEquals(
-            listOf(VoiceCommand.GO_BACK),
-            d.onWords(1, words("reviens", "en", "arriere")),
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("rembobine")))
+        // ≥ 8 chars → fuzzy: decoder slips and inflections still fire.
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(1, words("rembobinez")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(2, words("rembobiné")))
+        // But a genuinely different word does not.
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(3, words("bobine")))
+    }
+
+    @Test
+    fun multiTokenPhrasesStillSupported() {
+        val d = VoiceCommandDetector(
+            MatchLang.EN,
+            mapOf(VoiceCommand.GO_BACK to listOf("go back")),
         )
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("go", "backpack")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("go", "backpack", "go", "back")))
     }
 
     @Test
     fun newUtteranceResetsFiredPositions() {
         val d = VoiceCommandDetector(MatchLang.EN)
-        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("go", "back")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("rewind")))
         // Same words, new utterance: a genuinely new occurrence.
-        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(1, words("go", "back")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(1, words("rewind")))
     }
 
     @Test
-    fun hintNamesThePrimaryPhrase() {
-        assertEquals("go back", VoiceCommandDetector(MatchLang.EN).hint)
-        assertEquals("retour arrière", VoiceCommandDetector(MatchLang.FR).hint)
+    fun hintNamesThePrimaryWord() {
+        assertEquals("rewind", VoiceCommandDetector(MatchLang.EN).hint)
+        assertEquals("rembobine", VoiceCommandDetector(MatchLang.FR).hint)
     }
 }

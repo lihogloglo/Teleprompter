@@ -244,8 +244,9 @@ fun PrompterScreen(
             }
             preferredModel = (listOfNotNull(byLang, AsrModels.byId(s.asrModelId)) + AsrModels.ALL)
                 .firstOrNull { modelManager.isInstalled(it) }
-            asrModel =
-                if (s.asrOverlay || s.followVoice || s.voiceCommands) preferredModel else null
+            // The mic runs only while a voice mode is on. The transcript overlay
+            // is display-only — it must never keep the engine (and the mic) hot.
+            asrModel = if (s.followVoice || s.voiceCommands) preferredModel else null
             parsed = p
             script = loadedScript
         }
@@ -596,13 +597,16 @@ fun PrompterScreen(
         if (followVoice) reanchorToEyeline()
     }
 
-    // Manual scroll is authoritative (SPEC §5.4): once the hand and its fling
+    // Manual scroll is authoritative (SPEC §5.4): when the hand and its fling
     // settle, follow re-anchors to the eyeline instead of pulling the text back
-    // to the stale anchor. Watching isScrollInProgress too closes the gap
-    // between finger-up and the fling's first frame.
+    // to the stale anchor. While playing, the drive loop consumes the move
+    // itself — it must re-anchor before its first tick; this watcher only
+    // covers the paused case. Deliberately NOT watching isScrollInProgress:
+    // the drive's own per-frame scrolls keep that flag flapping, which starves
+    // this collector while playing — the bug that kept the elastic pull alive.
     LaunchedEffect(matcher) {
-        snapshotFlow { userScroll.busy || scrollState.isScrollInProgress }.collect { active ->
-            if (active || !userScroll.moved) return@collect
+        snapshotFlow { userScroll.busy }.collect { busy ->
+            if (busy || !userScroll.moved) return@collect
             userScroll.moved = false
             if (followVoice) reanchorToEyeline()
         }
@@ -654,9 +658,16 @@ fun PrompterScreen(
             last = now
             // The hand always wins: while the reader holds the text or its
             // fling is still running, the drive waits — it must never cancel a
-            // fling or drag the text back. On release, follow has re-anchored
-            // to the eyeline and classic mode resumes from where the text is.
+            // fling or drag the text back.
             if (userScroll.busy || scrollState.isScrollInProgress) continue
+            // The drive consumes the manual move itself, before its first tick
+            // after release: re-anchoring must win the race against the spring,
+            // or even one frame of stale-anchor pull yanks the text back.
+            if (userScroll.moved) {
+                userScroll.moved = false
+                if (followActive) reanchorToEyeline()
+                continue
+            }
             if (followActive) {
                 val layout = textLayout
                 val st = followState
@@ -1007,8 +1018,9 @@ fun PrompterScreen(
                             voiceCommands = false
                             scope.launch { settingsRepo.setVoiceCommands(false) }
                         }
-                        if (asrModel == null) asrModel = preferredModel
-                    } else if (!asrOverlayOn && !voiceCommands) {
+                        asrModel = preferredModel
+                    } else if (!voiceCommands) {
+                        // Untap = the mic stops. No mode, no engine, no exceptions.
                         asrModel = null
                     }
                     scope.launch { settingsRepo.setFollowVoice(on) }
@@ -1022,8 +1034,8 @@ fun PrompterScreen(
                             followVoice = false
                             scope.launch { settingsRepo.setFollowVoice(false) }
                         }
-                        if (asrModel == null) asrModel = preferredModel
-                    } else if (!asrOverlayOn && !followVoice) {
+                        asrModel = preferredModel
+                    } else if (!followVoice) {
                         asrModel = null
                     }
                     scope.launch { settingsRepo.setVoiceCommands(on) }

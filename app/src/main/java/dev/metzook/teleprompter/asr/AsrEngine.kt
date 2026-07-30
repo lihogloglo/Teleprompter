@@ -74,8 +74,18 @@ class AsrEngine(
         thread = null
     }
 
-    @SuppressLint("MissingPermission") // caller ensures RECORD_AUDIO
     private fun run() {
+        // stop() doesn't join: a replacement engine may already be spinning up
+        // while this one's loop still holds the mic. Serialize ownership so the
+        // new AudioRecord can't race the old one into "Microphone unavailable".
+        synchronized(MIC) {
+            if (!running) return // stopped while waiting for the mic
+            capture()
+        }
+    }
+
+    @SuppressLint("MissingPermission") // caller ensures RECORD_AUDIO
+    private fun capture() {
         val recognizer = try {
             OnlineRecognizer(
                 assetManager = null,
@@ -178,5 +188,8 @@ class AsrEngine(
     companion object {
         private const val SAMPLE_RATE = 16000
         private const val CHUNK = 1600 // 100 ms of audio per decode step
+
+        /** One mic owner across all engine instances (see [run]). */
+        private val MIC = Any()
     }
 }

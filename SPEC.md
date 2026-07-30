@@ -192,13 +192,20 @@ mirror: false
   v1 ships HID key mapping (center/prev/next slots); MediaSession for AVRCP-only remotes later.
 - All actions available as mappable commands (mirroring obsidian-teleprompter's
   everything-is-a-command approach).
-- **Voice command mode** (shipped M5 s4): "go back" spoken aloud = jump back, riding the same
-  ASR pipeline as follow mode. A mode of its own, mutually exclusive with follow-voice (one
-  interpretation of speech at a time); works paused or playing. Phrases per language
-  (en: "go back" / "jump back"; fr: "retour arrière" / "reviens en arrière"), normalized like
-  script tokens. No wake word, so a script containing the phrase will trigger it — the status
-  overlay always shows the active phrase. Detector is pure Kotlin (`follow/VoiceCommands.kt`),
-  fires once per occurrence, replay-tested.
+- **Voice command mode** (shipped M5 s4): a spoken command = jump back, riding the same ASR
+  pipeline as follow mode. A mode of its own, mutually exclusive with follow-voice (one
+  interpretation of speech at a time); works paused or playing. The command is **one rare,
+  phonetically distinctive word per language** — en **"rewind"**, fr **"rembobine"** — because
+  multi-word phrases ("retour arrière") decode unreliably and common words collide with script
+  text (device feedback 2026-07-30). Normalized like script tokens; command tokens ≥ 8 chars
+  match fuzzily so inflections/decoder slips still fire ("rembobinez"), shorter ones exactly.
+  No wake word, so a script containing the word will trigger it — the status overlay always
+  shows the active word. Detector is pure Kotlin (`follow/VoiceCommands.kt`), fires once per
+  occurrence, replay-tested.
+- **The mic runs only while a voice mode is on** (M5 s4): untoggling the last voice mode stops
+  the ASR engine — the live-transcript overlay is display-only and never keeps the mic hot.
+  Engine swaps serialize mic ownership (stop doesn't join the capture thread; the next engine
+  waits), so a quick off→on retoggle can't race two AudioRecords into "Microphone unavailable".
 - Touch gestures are mappable too (shipped M1): double-tap and long-press each map to any
   prompter action; pinch resizes text (toggleable). Single tap = play/pause stays fixed.
 
@@ -392,10 +399,16 @@ window ∩ visible tokens = ∅ mid-script — unrecoverable until LOST; and lon
 RESTART, so the natural hold-to-grab gesture teleported to the top. Fixes (§5.4): new
 `UserScrollControl` (pointer-down + nested-scroll fling tracking + stuck-fling watchdog) parks
 the drive while the hand or its fling owns the scroll; on settle — and on every follow-voice
-toggle — the matcher re-anchors to the line under the eyeline (`reanchorToEyeline`); long-press
+toggle — the matcher re-anchors to the line under the eyeline (`reanchorToEyeline`). The
+re-anchor is consumed *by the drive loop itself* before its first post-release tick — a
+snapshot-flow watcher alone loses the race while playing (the drive's own scrolls keep
+isScrollInProgress flapping and starve it), which let the elastic pull survive; long-press
 default → *Nothing* (still mappable). New **voice command mode** (§5.3): pure-Kotlin
-`VoiceCommandDetector` on the same ASR stream, "go back"/"jump back" (fr "retour arrière")
-→ jump back, chip-toggled, exclusive with follow-voice, works paused or playing, 10 unit tests.
+`VoiceCommandDetector` on the same ASR stream — say "rewind" (fr "rembobine") → jump back;
+chip-toggled, exclusive with follow-voice, works paused or playing; single rare word after
+"retour arrière" decoded poorly on device. ASR lifecycle fixed the same day: the engine now
+runs only while a voice mode is on (overlay is display-only) and mic ownership is serialized
+across engine swaps — untap genuinely stops listening, fast retoggles no longer kill the mic.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).
