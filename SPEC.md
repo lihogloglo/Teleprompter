@@ -223,6 +223,13 @@ re-anchor runs whenever follow-voice is toggled on, so follow always picks up fr
 screen, never from the top. Long-press ships unmapped by default for the same reason: holding
 a finger on the text is the grab gesture, not a command.
 
+Scroll gestures are handled **outside the mirror layer**, in screen space, via an explicit
+`scrollable` with `reverseDirection = !mirrorV`; the mirrored `graphicsLayer` only draws
+(M5 s4c, device-confirmed): a graphicsLayer transforms its children's pointer input too, so a
+scrollable inside a negative-`scaleY` layer received flipped/garbled touch coordinates —
+vertical mirror broke flicking while horizontal (x-only) didn't. Input must never pass through
+a negative-scale transform.
+
 ## 6. Quality-of-life features (brainstormed backlog)
 
 - **Rehearsal mode**: run the script off-camera; app records per-section timing and marks
@@ -409,6 +416,14 @@ chip-toggled, exclusive with follow-voice, works paused or playing; single rare 
 "retour arrière" decoded poorly on device. ASR lifecycle fixed the same day: the engine now
 runs only while a voice mode is on (overlay is display-only) and mic ownership is serialized
 across engine swaps — untap genuinely stops listening, fast retoggles no longer kill the mic.
+**M5 slice 4c** (2026-07-30, user diagnosed it on device): the remaining "elastic/confused
+flick" was *mirror-dependent* — only with vertical mirror on. Scroll gestures lived inside the
+`graphicsLayer` that flips the reading surface, and a layer transforms its children's pointer
+input along with the drawing, so a negative `scaleY` fed the scrollable flipped/garbled touch
+coordinates (horizontal mirror only touches x, which vertical scrolling never reads — hence no
+bug). Fix: gestures moved outside the mirror to an explicit screen-space `scrollable`
+(`reverseDirection = !mirrorV`); the Column keeps `verticalScroll(enabled = false)` for
+layout/offset only, and the mirror layer now draws and nothing else. v0.8.2.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

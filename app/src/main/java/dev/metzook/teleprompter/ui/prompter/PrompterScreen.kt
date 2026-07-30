@@ -31,6 +31,7 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -777,7 +778,20 @@ fun PrompterScreen(
             Modifier
                 .fillMaxSize()
                 .padding(horizontal = insetX, vertical = insetY)
-                .onSizeChanged { viewportPx = it.height },
+                .onSizeChanged { viewportPx = it.height }
+                // Scroll gestures live HERE, outside the mirror layer, in plain
+                // screen space. A graphicsLayer transforms its children's
+                // pointer input too, and a negative scaleY made flicks fight
+                // the reader (device-confirmed: vertical mirror broke manual
+                // scrolling; horizontal never touches y). The mirror below now
+                // only draws. Normal feel is reverseDirection = true (what
+                // verticalScroll uses); a vertical flip inverts what "down"
+                // means on screen, so the boolean flips with it.
+                .scrollable(
+                    state = scrollState,
+                    orientation = Orientation.Vertical,
+                    reverseDirection = !mirrorV,
+                ),
         ) {
             // Everything a physical rig would mirror lives inside this layer.
             Box(
@@ -791,7 +805,9 @@ fun PrompterScreen(
                 Column(
                     Modifier
                         .fillMaxSize()
-                        .verticalScroll(scrollState),
+                        // Layout, clipping and scroll offset only — gestures are
+                        // disabled here and handled outside the mirror (above).
+                        .verticalScroll(scrollState, enabled = false),
                 ) {
                     Spacer(Modifier.height(topSpacer))
                     Text(
