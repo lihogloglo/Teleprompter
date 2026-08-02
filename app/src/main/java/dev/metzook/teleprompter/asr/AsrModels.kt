@@ -19,10 +19,10 @@ data class AsrModel(
 }
 
 object AsrModels {
-    // Kroko streaming zipformers (2025): two years newer training than the
-    // 2023 models below, at ~71 MB each — the accuracy upgrade the follow
-    // matcher lives on (docs/voice-follow-research.md). Listed first per
-    // language: the preferred-model pick takes the first installed match.
+    // One model per language, the best available: kroko streaming zipformers
+    // (2025), ~71 MB each. [ALL] is what the settings screen offers; [LEGACY]
+    // holds superseded models that stay usable if already installed and are
+    // deleted automatically once their replacement is downloaded.
     val EN_KROKO = AsrModel(
         id = "zipformer-en-kroko",
         label = "English · accurate, 2025 (≈71 MB)",
@@ -47,6 +47,7 @@ object AsrModels {
         modelType = "zipformer2",
     )
 
+    // Superseded (2023): not offered for download anymore.
     val EN_SMALL = AsrModel(
         id = "zipformer-en-20M",
         label = "English · small & fast, 2023 (≈46 MB)",
@@ -69,7 +70,16 @@ object AsrModels {
         joiner = "joiner-epoch-29-avg-9-with-averaged-model.onnx",
     )
 
-    val ALL = listOf(EN_KROKO, FR_KROKO, EN_SMALL, FR)
+    /** Offered in settings: exactly one model per language. */
+    val ALL = listOf(EN_KROKO, FR_KROKO)
 
-    fun byId(id: String?): AsrModel = ALL.firstOrNull { it.id == id } ?: EN_SMALL
+    /** Superseded models: usable while installed, cleaned up on upgrade. */
+    val LEGACY = listOf(EN_SMALL, FR)
+
+    fun byId(id: String?): AsrModel =
+        (ALL + LEGACY).firstOrNull { it.id == id } ?: EN_KROKO
+
+    /** Models this one replaces (same language, different id). */
+    fun supersededBy(model: AsrModel): List<AsrModel> =
+        (ALL + LEGACY).filter { it.lang == model.lang && it.id != model.id }
 }

@@ -468,6 +468,60 @@ preferred when installed (`zipformer2`); language pick now prefers *installed* m
 2023 models remain as fallbacks. Hotword biasing investigated and deferred: sherpa-onnx needs
 a `bpe.vocab` none of our model repos ship (future slice: generate + host one, then
 `modified_beam_search` + per-script rare-word hints). v0.9.0.
+**M5 slice 6 — follow diagnostics + one model per language** (2026-08-02, user feedback:
+two downloadable models per language is confusing; and the playhead still stopped following
+in a session where the *transcript stayed correct* — so the failure is in the matcher /
+visible-window / UI layer, not recognition, and must be debugged from data, not guesses).
+(1) **Follow-session tracing**: whenever follow-voice is on, every matcher input and output
+is recorded to a TSV trace file — ASR words as fed (partials + finals), the visible-token
+window at each feed, every state change (anchor/mode/rate), re-anchors, play/pause edges,
+skipped-while-paused counts, and a 1 Hz scroll-vs-target snapshot. Format + parser + replayer
+are pure Kotlin (`follow/FollowTrace`, locale-proof encoding, corrupt-line tolerant);
+`FollowTrace.replay()` drives a fresh Matcher through a pulled trace exactly as the live
+session did — a replay-equality test pins that recorded sessions reproduce state-for-state.
+Writer (`session/FollowTraceWriter`) is off-UI-thread, flushes per line, keeps the last 5
+sessions in `Android/data/…/files/traces/` (adb/USB-pullable); Settings gains "Share latest
+follow trace" (FileProvider). The status overlay now shows **"⚠ anchor off-screen"** live in
+following/frozen/lost states — the suspected stuck-state signature (anchor outside the
+visible window clamps every search to a range the reader isn't in) is visible the moment it
+happens. Debug loop: reproduce once → share/pull the trace → replay it as a JVM test →
+fix → the trace becomes a regression test.
+(2) **One model per language**: settings now offer only the two kroko models; the 2023
+models moved to a hidden LEGACY list — still used if installed (nothing breaks before the
+upgrade is downloaded), auto-deleted when the same-language replacement finishes
+downloading. v0.9.1.
+**M5 slice 7 — the actual cause: words were never reassembled** (2026-08-02). The slice-6
+hypothesis above ("the failure is in the matcher / visible-window / UI layer, not
+recognition") was **wrong**, and the first pulled trace said so in one line. The matcher was
+being fed `Je suis pas f an des l if e ac t u ce s de vi e` for *"Je suis pas fan des life
+astuces de vie"*: **44% of its input tokens were single characters**, 186 distinct values out
+of a 653-token BPE vocabulary. Recognition was fine all along — `result.text` read correctly
+on screen, which is exactly why this survived months of matcher-heuristic patching.
+Cause: `mergeBpeTokens` detected word starts by looking for the raw BPE marker `▁` (U+2581).
+sherpa-onnx's `SymbolTable` substitutes an **ASCII space** for `▁` when it loads tokens.txt,
+so the JNI hands Kotlin `" de"` where the vocab holds `"▁de"`. No piece ever started with
+`▁`, the function took its "vocabulary has no markers" fallback — one word per subword piece
+— and `trim()` then erased the leading space, destroying the last evidence of the boundary.
+Short function words (`de`, `des`, `je`, `vous`) survived intact because they are single BPE
+tokens, so follow *appeared* to work and then lost the thread the moment a content word
+arrived. Fix: treat both `▁` and a leading space as a word start, and read the boundary
+*before* trimming (`follow/Transcript`, 9 tests built from the real vocabulary).
+Measured on the same script, same reader: single-char tokens **44.0% → 1.2%**, mean token
+length **1.96 → 5.06**, FOLLOWING→FROZEN transitions **10 → 0**, LOST escalations **6 → 0**.
+Also settled, from the same trace: the long-standing "it always stops at the end of the
+visible page" report is a **detection artefact, not a cause** — all 10 freezes began at
+9–42% down the page (median 27%, i.e. the eyeline), none in the bottom 10%, and the anchor
+never came within 19 tokens of `vis.last`. The freeze starts at the eyeline and the scroll
+stops with it; the reader simply keeps reading the frozen page and only notices on running
+out of text. (A real sharp edge does exist there — at `anchor == vis.last` the forward scan's
+range `[anchor+1, min(anchor+smallSkip, vis.last)]` goes empty — but it cannot deadlock: the
+scroll target is derived from the anchor's *line position*, not from it advancing, so the
+page keeps easing forward and revives the scan. Left unchanged deliberately; the trace
+analyzer reports the runway, so evidence would show up if it ever mattered.)
+Tooling: ASR health (`listening`, decode-lag EMA, mic error) now goes into the trace, so a
+single session distinguishes matcher-side from mic-death / thermal / encoder-decay causes;
+`tools/trace-report.py` renders the timeline and the verdict, `tools/pull-traces.ps1` pulls
+and reports in one command over adb. v0.9.3.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

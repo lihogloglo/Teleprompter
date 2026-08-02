@@ -108,6 +108,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
+import dev.metzook.teleprompter.BuildConfig
 import dev.metzook.teleprompter.KeyCommandBus
 import dev.metzook.teleprompter.asr.AsrEngine
 import dev.metzook.teleprompter.asr.AsrEvent
@@ -116,6 +117,7 @@ import dev.metzook.teleprompter.asr.AsrModels
 import dev.metzook.teleprompter.asr.AsrState
 import dev.metzook.teleprompter.asr.ModelManager
 import dev.metzook.teleprompter.follow.FollowMode
+import dev.metzook.teleprompter.follow.FollowTrace
 import dev.metzook.teleprompter.follow.LangDetect
 import dev.metzook.teleprompter.follow.MatchLang
 import dev.metzook.teleprompter.follow.FollowState
@@ -127,6 +129,7 @@ import dev.metzook.teleprompter.follow.SessionStatsBuilder
 import dev.metzook.teleprompter.follow.SpokenSegment
 import dev.metzook.teleprompter.follow.VoiceCommand
 import dev.metzook.teleprompter.follow.VoiceCommandDetector
+import dev.metzook.teleprompter.session.FollowTraceWriter
 import dev.metzook.teleprompter.settings.FrameMargins
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
@@ -138,6 +141,8 @@ import dev.metzook.teleprompter.vault.Script
 import dev.metzook.teleprompter.vault.ScriptRepository
 import dev.metzook.teleprompter.vault.sections
 import dev.metzook.teleprompter.vault.toDisplaySegments
+import java.io.File
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -168,6 +173,12 @@ private const val MAX_EASE_BACK_LINES_PER_SEC = 0.6f
 /** Feed-forward keeps the text coasting this long after the last anchor
  *  advance; longer silence means the reader paused, so the glide stops. */
 private const val COAST_AFTER_MATCH_SEC = 0.9f
+
+/** Decode-lag change worth a trace line; the EMA jitters by 1-2 ms at rest. */
+private const val DECODE_MS_TRACE_STEP = 5
+
+/** Slow heartbeat so a silent-but-healthy engine still stamps the trace. */
+private const val ASR_TRACE_HEARTBEAT_NANOS = 2_000_000_000L
 
 /** countdownSec sentinel: session starts when the reading voice is heard. */
 const val START_ON_VOICE = -1
@@ -250,14 +261,16 @@ fun PrompterScreen(
             val langTag = p.overrides.lang?.trim() ?: detected?.name?.lowercase()
             scriptLang = langTag
             val byLang = langTag?.let { tag ->
-                // First *installed* model of the language: newer models sit
-                // earlier in ALL, so an installed upgrade wins automatically.
-                AsrModels.ALL.firstOrNull {
+                // First *installed* model of the language; a still-installed
+                // legacy model keeps working until its upgrade is downloaded.
+                (AsrModels.ALL + AsrModels.LEGACY).firstOrNull {
                     it.lang.equals(tag, ignoreCase = true) && modelManager.isInstalled(it)
                 }
             }
-            preferredModel = (listOfNotNull(byLang, AsrModels.byId(s.asrModelId)) + AsrModels.ALL)
-                .firstOrNull { modelManager.isInstalled(it) }
+            preferredModel = (
+                listOfNotNull(byLang, AsrModels.byId(s.asrModelId)) +
+                    AsrModels.ALL + AsrModels.LEGACY
+                ).firstOrNull { modelManager.isInstalled(it) }
             // The mic runs only while a voice mode is on. The transcript overlay
             // is display-only — it must never keep the engine (and the mic) hot.
             asrModel = if (s.followVoice || s.voiceCommands) preferredModel else null
@@ -326,6 +339,10 @@ fun PrompterScreen(
     val commandDetector = remember(scriptIndex) { VoiceCommandDetector(scriptIndex.lang) }
     var followState by remember(matcher) { mutableStateOf(matcher.state) }
     var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    // Follow diagnostics (SPEC §3.2 testability): while follow-voice runs,
+    // every matcher input and output is traced to a file so "it stopped
+    // following" replays deterministically in the JVM harness (FollowTrace).
+    var tracer by remember { mutableStateOf<FollowTraceWriter?>(null) }
     val density = LocalDensity.current
 
     // Session stats (SPEC §5.2.4): fed from matcher state changes + play/pause.
@@ -406,9 +423,59 @@ fun PrompterScreen(
     val asrState by (engine?.state ?: remember { MutableStateFlow(AsrState()) }).collectAsState()
     val followActive = followVoice && engine != null
 
+    // One trace file per follow session; last few kept, shareable from Settings.
+    DisposableEffect(followActive, matcher) {
+        if (followActive) {
+            val writer = FollowTraceWriter.start(
+                dir = File(context.getExternalFilesDir(null), "traces"),
+                header = FollowTrace.Event.Header(
+                    version = 1,
+                    app = BuildConfig.VERSION_NAME,
+                    lang = scriptIndex.lang.name,
+                    tokenCount = scriptIndex.tokens.size,
+                    scriptId = scriptId,
+                ),
+            )
+            tracer = writer
+            onDispose {
+                tracer = null
+                writer.close()
+            }
+        } else {
+            onDispose { }
+        }
+    }
+
+    // ASR health into the trace. Without it a trace can only show *that* the
+    // words stopped, never whether the mic dropped out or the decoder fell
+    // behind its 100 ms budget — two different bugs with two different fixes.
+    // Logged on every listening/error edge, on a meaningful decode-lag move,
+    // and otherwise as a slow heartbeat so silence is distinguishable from a
+    // dead engine.
+    LaunchedEffect(tracer) {
+        val tr = tracer ?: return@LaunchedEffect
+        var lastListening: Boolean? = null
+        var lastError: String? = null
+        var lastDecodeMs = Int.MIN_VALUE
+        var lastLogNanos = 0L
+        snapshotFlow { asrState }.collect { s ->
+            val now = System.nanoTime()
+            val edge = s.listening != lastListening || s.error != lastError
+            val lagMoved = abs(s.decodeMs - lastDecodeMs) >= DECODE_MS_TRACE_STEP
+            if (edge || lagMoved || now - lastLogNanos > ASR_TRACE_HEARTBEAT_NANOS) {
+                lastListening = s.listening
+                lastError = s.error
+                lastDecodeMs = s.decodeMs
+                lastLogNanos = now
+                tr.log(FollowTrace.Event.Asr(tr.elapsed(), s.listening, s.decodeMs, s.error))
+            }
+        }
+    }
+
     LaunchedEffect(playing) {
         val now = System.currentTimeMillis()
         if (playing) statsBuilder.onPlay(now) else statsBuilder.onPause(now)
+        tracer?.let { it.log(FollowTrace.Event.Play(it.elapsed(), playing)) }
     }
 
     fun adjustWpm(delta: Int) {
@@ -497,6 +564,7 @@ fun PrompterScreen(
     fun restart() {
         if (followVoice) {
             matcher.reanchor(-1)
+            tracer?.let { it.log(FollowTrace.Event.Reanchor(it.elapsed(), -1)) }
             publishState(matcher.state)
         }
         scope.launch { scrollState.scrollTo(0) }
@@ -537,6 +605,7 @@ fun PrompterScreen(
     // principle 2: never touch mid-take). The scroll then glides to the anchor.
     fun reanchorTo(anchor: Int) {
         matcher.reanchor(anchor)
+        tracer?.let { it.log(FollowTrace.Event.Reanchor(it.elapsed(), anchor)) }
         publishState(matcher.state)
     }
 
@@ -576,22 +645,53 @@ fun PrompterScreen(
     // The command detector listens whenever its mode is on — "go back" must work
     // paused or playing (the user is always in control).
     LaunchedEffect(engine, matcher) {
+        var tracedVis: IntRange? = null
+        var tracedAnchor = Int.MIN_VALUE
+        var tracedMode: FollowMode? = null
         engine?.events?.collect { event ->
             if (followVoice && (playing || armed)) {
-                matcher.visibleTokens = visibleTokenRange()
-                publishState(
-                    matcher.onWords(
-                        event.utterance,
-                        event.words,
-                        final = event is AsrEvent.Final,
-                    ),
+                val vis = visibleTokenRange()
+                matcher.visibleTokens = vis
+                tracer?.let { tr ->
+                    val t = tr.elapsed()
+                    if (vis != tracedVis) {
+                        tracedVis = vis
+                        tr.log(FollowTrace.Event.Vis(t, vis?.first ?: -1, vis?.last ?: -1))
+                    }
+                    tr.log(
+                        FollowTrace.Event.Words(
+                            t, event.utterance, event is AsrEvent.Final, event.words,
+                        ),
+                    )
+                }
+                val st = matcher.onWords(
+                    event.utterance,
+                    event.words,
+                    final = event is AsrEvent.Final,
                 )
+                publishState(st)
+                if (st.anchor != tracedAnchor || st.mode != tracedMode) {
+                    tracedAnchor = st.anchor
+                    tracedMode = st.mode
+                    tracer?.let {
+                        it.log(
+                            FollowTrace.Event.State(
+                                it.elapsed(), st.anchor, st.mode, st.tokensPerSec,
+                            ),
+                        )
+                    }
+                }
                 if (armed && followState.anchor != armedAnchor) {
                     armed = false
                     playing = true
                 }
             } else {
                 matcher.skip(event.utterance, event.words)
+                tracer?.let {
+                    it.log(
+                        FollowTrace.Event.Skip(it.elapsed(), event.utterance, event.words.size),
+                    )
+                }
             }
             // The end screen swallows keys and touch; voice commands too.
             if (voiceCommands && !followVoice && summaryStats == null) {
@@ -672,6 +772,7 @@ fun PrompterScreen(
         var last = withFrameNanos { it }
         var lastAnchor = Int.MIN_VALUE
         var lastAdvance = last
+        var lastSnap = 0L
         while (playing) {
             val now = withFrameNanos { it }
             val dt = ((now - last) / 1_000_000_000f).coerceIn(0f, 0.1f)
@@ -741,6 +842,20 @@ fun PrompterScreen(
                     maxBackPxPerSec = lineHeightPx * MAX_EASE_BACK_LINES_PER_SEC,
                 )
                 if (delta != 0f) scrollState.scrollBy(delta)
+                if (now - lastSnap > 1_000_000_000L) {
+                    lastSnap = now
+                    tracer?.let {
+                        it.log(
+                            FollowTrace.Event.Snap(
+                                it.elapsed(),
+                                scrollState.value,
+                                scrollState.maxValue,
+                                target,
+                                dynamics.velocity,
+                            ),
+                        )
+                    }
+                }
             } else {
                 if (pxPerSec > 0f) scrollState.scrollBy(dt * pxPerSec)
                 if (scrollState.value >= scrollState.maxValue) playing = false
@@ -925,16 +1040,22 @@ fun PrompterScreen(
                 // Always name the active language — a wrong-model session must be
                 // visible at a glance, not a silent failure to follow.
                 val lang = asrModel?.lang ?: "?"
+                // Diagnostic: an anchor outside the visible window means every
+                // search is clamped to a range the reader isn't in — the exact
+                // "playhead stopped following" trap. Make it visible live.
+                val offScreen = followActive && followState.anchor >= 0 &&
+                    matcher.visibleTokens?.let { followState.anchor !in it } == true
+                val offMark = if (offScreen) " · ⚠ anchor off-screen" else ""
                 val statusText = when {
                     asrState.error != null -> asrState.error
                     !asrState.listening -> "starting…"
                     followActive && followState.mode == FollowMode.LOST ->
-                        "lost · read any line, or use the remote"
+                        "lost · read any line, or use the remote$offMark"
                     followActive && followState.mode == FollowMode.FROZEN ->
-                        "improv · holding · $lang"
+                        "improv · holding · $lang$offMark"
                     followActive && followState.anchor >= 0 ->
                         "following · $lang · ${followState.anchor + 1}/" +
-                            "${scriptIndex.tokens.size} · ${asrState.decodeMs} ms"
+                            "${scriptIndex.tokens.size} · ${asrState.decodeMs} ms$offMark"
                     followActive -> "waiting for your voice · $lang"
                     voiceCommands ->
                         "say “${commandDetector.hint}” to jump back · $lang"

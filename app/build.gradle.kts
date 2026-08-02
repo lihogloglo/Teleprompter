@@ -14,8 +14,8 @@ android {
         applicationId = "dev.metzook.teleprompter"
         minSdk = 29
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.9.0"
+        versionCode = 15
+        versionName = "0.9.3"
     }
 
     buildTypes {
@@ -32,6 +32,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true // version string in follow-trace headers
     }
 }
 

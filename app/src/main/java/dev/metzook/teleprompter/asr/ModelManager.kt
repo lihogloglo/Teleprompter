@@ -17,7 +17,7 @@ class ModelManager(private val baseDir: File) {
     fun isInstalled(model: AsrModel): Boolean = File(dirFor(model), COMPLETE_MARKER).exists()
 
     fun installedIds(): Set<String> =
-        AsrModels.ALL.filter { isInstalled(it) }.map { it.id }.toSet()
+        (AsrModels.ALL + AsrModels.LEGACY).filter { isInstalled(it) }.map { it.id }.toSet()
 
     fun delete(model: AsrModel) {
         dirFor(model).deleteRecursively()
@@ -74,6 +74,9 @@ class ModelManager(private val baseDir: File) {
             if (!part.renameTo(target)) error("Couldn't finalize $name")
         }
         File(dir, COMPLETE_MARKER).writeText("ok")
+        // One model per language: the fresh download supersedes any older
+        // model of the same language still on disk.
+        AsrModels.supersededBy(model).forEach { delete(it) }
     }
 
     private companion object {

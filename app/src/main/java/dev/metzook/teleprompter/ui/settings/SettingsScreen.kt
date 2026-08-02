@@ -37,13 +37,17 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import android.content.Intent
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import dev.metzook.teleprompter.asr.AsrModel
 import dev.metzook.teleprompter.asr.AsrModels
 import dev.metzook.teleprompter.asr.ModelManager
+import dev.metzook.teleprompter.session.FollowTraceWriter
 import dev.metzook.teleprompter.settings.FrameMargins
 import dev.metzook.teleprompter.settings.GestureSlot
 import dev.metzook.teleprompter.settings.PrompterAction
@@ -51,6 +55,7 @@ import dev.metzook.teleprompter.settings.PrompterSettings
 import dev.metzook.teleprompter.settings.ScreenOrientation
 import dev.metzook.teleprompter.settings.SettingsRepository
 import dev.metzook.teleprompter.ui.prompter.START_ON_VOICE
+import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -235,6 +240,40 @@ fun SettingsScreen(
                     checked = settings.asrOverlay,
                     onCheckedChange = { scope.launch { settingsRepo.setAsrOverlay(it) } },
                 )
+            }
+
+            // Follow diagnostics: every follow session writes a trace file
+            // (matcher inputs/outputs) that replays in the JVM test harness —
+            // "it stopped following" gets debugged from data, not guesses.
+            val context = LocalContext.current
+            val traceDir = File(context.getExternalFilesDir(null), "traces")
+            val latestTrace = remember(installedTick) { FollowTraceWriter.latest(traceDir) }
+            if (latestTrace != null) {
+                Text(
+                    "Follow sessions are traced for debugging (last 5 kept, on-device only). " +
+                        "Latest: ${latestTrace.name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = {
+                    val uri = FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.files",
+                        latestTrace,
+                    )
+                    context.startActivity(
+                        Intent.createChooser(
+                            Intent(Intent.ACTION_SEND).apply {
+                                type = "text/tab-separated-values"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            },
+                            "Share follow trace",
+                        ),
+                    )
+                }) {
+                    Text("Share latest follow trace")
+                }
             }
             Spacer(Modifier.height(24.dp))
         }

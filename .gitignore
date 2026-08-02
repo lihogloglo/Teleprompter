@@ -7,3 +7,6 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
+# Follow-session traces pulled off the phone; a trace only becomes a fixture
+# once it's promoted into app/src/test/resources.
+traces/

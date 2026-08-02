@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.util.Log
 import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FeatureConfig
@@ -184,6 +185,7 @@ class AsrEngine(
         var utterancesSinceRebuild = 0
         var decodeEma = 0f
         var lastEmitted: List<String> = emptyList()
+        var rawDumps = 0
 
         /** Read/decode until stopped or the record dies; false = record died. */
         fun pump(record: AudioRecord): Boolean {
@@ -199,6 +201,14 @@ class AsrEngine(
                 decodeEma += 0.1f * (decodeMs - decodeEma)
                 val result = recognizer.getResult(stream)
                 var partial = result.text
+                // Which word-start convention this sherpa build emits decides
+                // whether mergeBpeTokens can rebuild words at all (see
+                // Transcript.isWordStart). Pipe-delimited so a leading space is
+                // visible; bounded so it costs nothing over a long session.
+                if (rawDumps < RAW_TOKEN_DUMPS && result.tokens.isNotEmpty()) {
+                    rawDumps++
+                    Log.i(TAG, "raw tokens: " + result.tokens.joinToString("|"))
+                }
                 val words = mergeBpeTokens(result.tokens.asList(), result.timestamps)
                 if (recognizer.isEndpoint(stream)) {
                     if (words.isNotEmpty()) _events.tryEmit(AsrEvent.Final(utterance, words))
@@ -295,5 +305,10 @@ class AsrEngine(
 
         /** One mic owner across all engine instances (see [run]). */
         private val MIC = Any()
+
+        private const val TAG = "AsrEngine"
+
+        /** Raw-token dumps per session: enough to identify the convention. */
+        private const val RAW_TOKEN_DUMPS = 3
     }
 }
