@@ -16,6 +16,12 @@ enum class VoiceCommand {
  *    with script text. Long command tokens (≥ [FUZZY_LEN] chars) match fuzzily
  *    so inflections and decoder slips still fire ("rembobiner", "rembobinez");
  *    shorter ones must match exactly.
+ *  - A rare word is exactly what a decoder fragments: "rembobine" is not in the
+ *    model's vocabulary, so it often comes out as several small words
+ *    ("ram bobine"). Each phrase token may therefore consume up to [MAX_JOIN]
+ *    adjacent spoken tokens, joined, before the comparison — which also means
+ *    neighbouring script words can concatenate into a near-miss, slightly
+ *    widening the no-wake-word caveat below.
  *  - Phrases and speech are both normalized through [TextNorm], so casing,
  *    punctuation and diacritics never matter.
  *  - Each occurrence fires exactly once: growing partials repeat the whole
@@ -55,17 +61,41 @@ class VoiceCommandDetector(
         val fired = ArrayList<VoiceCommand>(1)
         for (end in (firedThrough + 1)..tokens.size) {
             for ((cmd, phrase) in compiled) {
-                val start = end - phrase.size
-                // A word that already fired one command can't count toward another.
-                if (start < firedThrough) continue
-                if ((start until end).all { tokenMatches(tokens[it], phrase[it - start]) }) {
-                    fired += cmd
-                    firedThrough = end
-                    break
-                }
+                // A word that already fired one command can't count toward
+                // another (matchStart returns -1 on no match).
+                if (matchStart(tokens, end, phrase) < firedThrough) continue
+                fired += cmd
+                firedThrough = end
+                break
             }
         }
         return fired
+    }
+
+    /**
+     * Matches [phrase] right-aligned so its last token ends at [end], letting
+     * each phrase token consume 1..[MAX_JOIN] adjacent spoken tokens joined
+     * together ("ram" + "bobine" → "rambobine"). Returns the start index of
+     * the consumed span, or -1 if the phrase doesn't match here.
+     */
+    private fun matchStart(tokens: List<String>, end: Int, phrase: List<String>): Int {
+        var pos = end
+        for (i in phrase.indices.reversed()) {
+            val expected = phrase[i]
+            // A join longer than the target plus its edit budget can't match.
+            val slack = if (expected.length >= FUZZY_LEN) 2 else 0
+            var joined = ""
+            var take = 0
+            while (true) {
+                if (take == MAX_JOIN || pos - take - 1 < 0) return -1
+                joined = tokens[pos - take - 1] + joined
+                take++
+                if (tokenMatches(joined, expected)) break
+                if (joined.length > expected.length + slack) return -1
+            }
+            pos -= take
+        }
+        return pos
     }
 
     private fun tokenMatches(spoken: String, expected: String): Boolean =
@@ -76,6 +106,9 @@ class VoiceCommandDetector(
         /** Fuzzy only for long command tokens: at this length [Fuzzy] allows two
          *  edits, and no short everyday word can drift into range. */
         private const val FUZZY_LEN = 8
+
+        /** Most fragments a decoder realistically splits one command word into. */
+        private const val MAX_JOIN = 3
 
         fun defaultPhrases(lang: MatchLang): Map<VoiceCommand, List<String>> = when (lang) {
             // One rare, distinctive word per language ("rewind"): never said by

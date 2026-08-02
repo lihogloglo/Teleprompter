@@ -63,6 +63,43 @@ class VoiceCommandsTest {
     }
 
     @Test
+    fun frenchCommandToleratesDecoderSlips() {
+        val d = VoiceCommandDetector(MatchLang.FR)
+        // The field report: the decoder heard "rambobine" — one edit away.
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("rambobine")))
+    }
+
+    @Test
+    fun commandSplitIntoFragmentsStillFires() {
+        val d = VoiceCommandDetector(MatchLang.FR)
+        // A rare word is exactly what a decoder fragments into small words.
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("ram", "bobine")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(1, words("rem", "bobine")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(2, words("rambo", "bine")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(3, words("rem", "bo", "bine")))
+        // English too: exact short commands reassemble from exact fragments.
+        val e = VoiceCommandDetector(MatchLang.EN)
+        assertEquals(listOf(VoiceCommand.GO_BACK), e.onWords(0, words("re", "wind")))
+    }
+
+    @Test
+    fun splitFragmentsFireOnceAcrossGrowingPartials() {
+        val d = VoiceCommandDetector(MatchLang.FR)
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("ram")))
+        assertEquals(listOf(VoiceCommand.GO_BACK), d.onWords(0, words("ram", "bobine")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("ram", "bobine")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("ram", "bobine", "ok")))
+    }
+
+    @Test
+    fun unrelatedNeighboursDoNotConcatenateIntoACommand() {
+        val d = VoiceCommandDetector(MatchLang.FR)
+        // "la bobine" joins to "labobine" — three edits away, must not fire.
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(0, words("la", "bobine")))
+        assertEquals(emptyList<VoiceCommand>(), d.onWords(1, words("une", "bobine", "ici")))
+    }
+
+    @Test
     fun multiTokenPhrasesStillSupported() {
         val d = VoiceCommandDetector(
             MatchLang.EN,

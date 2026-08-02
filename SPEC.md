@@ -199,8 +199,14 @@ mirror: false
   multi-word phrases ("retour arrière") decode unreliably and common words collide with script
   text (device feedback 2026-07-30). Normalized like script tokens; command tokens ≥ 8 chars
   match fuzzily so inflections/decoder slips still fire ("rembobinez"), shorter ones exactly.
-  No wake word, so a script containing the word will trigger it — the status overlay always
-  shows the active word. Detector is pure Kotlin (`follow/VoiceCommands.kt`), fires once per
+  A rare command word is also exactly what a decoder *fragments*: "rembobine" is OOV for the
+  fr model and can come out as several small words ("ram bobine"), so each command token may
+  consume up to 3 adjacent spoken tokens joined before the comparison (device feedback
+  2026-08-02 — "rambobine" didn't fire). Decoder-level hotword biasing (sherpa-onnx
+  `hotwords_file` + `modified_beam_search`) would fix this at the source but needs a
+  `bpe.vocab` neither packaged model repo ships. No wake word, so a script containing the
+  word (or a near-joining neighbour pair) will trigger it — the status overlay always shows
+  the active word. Detector is pure Kotlin (`follow/VoiceCommands.kt`), fires once per
   occurrence, replay-tested.
 - **The mic runs only while a voice mode is on** (M5 s4): untoggling the last voice mode stops
   the ASR engine — the live-transcript overlay is display-only and never keeps the mic hot.
@@ -424,6 +430,13 @@ coordinates (horizontal mirror only touches x, which vertical scrolling never re
 bug). Fix: gestures moved outside the mirror to an explicit screen-space `scrollable`
 (`reverseDirection = !mirrorV`); the Column keeps `verticalScroll(enabled = false)` for
 layout/offset only, and the mirror layer now draws and nothing else. v0.8.2.
+**M5 slice 4d — paused controls compaction + command-word fragments** (2026-08-02, device
+feedback: the paused panel ate the landscape screen — the tap-to-resume zone was a sliver and
+mis-taps landed on the speed slider; "rembobine" decoded as "rambobine" and never fired).
+Landscape now docks the controls as a 340 dp side sheet (portrait keeps the bottom sheet), the
+slider label/value moved inline into the slider rows, and the redundant wpm/pinch hint text is
+gone — the whole left of a landscape screen is now the resume tap zone. Voice commands match
+across decoder fragments (§5.3 join rule). v0.8.3.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

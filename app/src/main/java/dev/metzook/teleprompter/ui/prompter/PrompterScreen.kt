@@ -19,7 +19,9 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -96,6 +98,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -988,15 +991,22 @@ fun PrompterScreen(
             )
         }
 
+        // Landscape docks the controls as a side sheet: a bottom sheet plus two
+        // sliders would swallow the whole short edge, leaving almost nowhere to
+        // tap to resume (and mis-taps landed on the speed slider).
         AnimatedVisibility(
             visible = !playing && countdown == 0 && !armed && !frameEditing,
-            modifier = Modifier.align(Alignment.BottomCenter),
-            enter = fadeIn() + slideInVertically { it / 2 },
-            exit = fadeOut() + slideOutVertically { it / 2 },
+            modifier = Modifier.align(
+                if (isLandscape) Alignment.CenterEnd else Alignment.BottomCenter,
+            ),
+            enter = fadeIn() +
+                if (isLandscape) slideInHorizontally { it / 2 } else slideInVertically { it / 2 },
+            exit = fadeOut() +
+                if (isLandscape) slideOutHorizontally { it / 2 } else slideOutVertically { it / 2 },
         ) {
             ControlsPanel(
                 title = loaded.title,
-                subtitle = "≈ ${formatTime(remainingSec)} left · $wordCount words · $wpm wpm",
+                subtitle = "≈ ${formatTime(remainingSec)} left · $wordCount words",
                 wpm = wpm,
                 onWpmChange = { wpm = it },
                 onWpmChangeFinished = {
@@ -1104,118 +1114,165 @@ private fun ControlsPanel(
     Surface(
         color = Color(0xF2161616),
         contentColor = Color.White,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        modifier = Modifier
-            .fillMaxWidth()
+        shape = if (landscape) {
+            RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp)
+        } else {
+            RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+        },
+        modifier = (if (landscape) {
+            Modifier.width(340.dp).fillMaxHeight()
+        } else {
+            Modifier.fillMaxWidth()
+        })
             // Swallow taps so touching the panel doesn't start playback.
             .pointerInput(Unit) { detectTapGestures { } },
     ) {
-        Column(
-            Modifier
-                .padding(horizontal = 20.dp, vertical = 12.dp)
-                .navigationBarsPadding(),
+        // The box centres the sheet's content in the landscape column; the
+        // scroll keeps every control reachable on screens too short for it.
+        Box(
+            if (landscape) Modifier.fillMaxHeight() else Modifier,
+            contentAlignment = Alignment.Center,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        subtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.6f),
-                    )
-                }
-                IconButton(onClick = onRestart) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Restart")
-                }
-                FilledIconButton(onClick = onPlay, modifier = Modifier.size(56.dp)) {
-                    Icon(
-                        Icons.Default.PlayArrow,
-                        contentDescription = "Play",
-                        modifier = Modifier.size(32.dp),
-                    )
-                }
-                IconButton(onClick = onExit) {
-                    Icon(Icons.Default.Close, contentDescription = "Exit")
-                }
-            }
-            Text("Speed — $wpm wpm", style = MaterialTheme.typography.labelMedium)
-            Slider(
-                value = wpm.toFloat(),
-                onValueChange = { onWpmChange(it.roundToInt()) },
-                onValueChangeFinished = onWpmChangeFinished,
-                valueRange = 40f..400f,
-            )
-            Text(
-                "Text size — ${fontSp.roundToInt()} sp (pinch the text to adjust)",
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Slider(
-                value = fontSp,
-                onValueChange = onFontChange,
-                valueRange = 24f..72f,
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (followAvailable) {
-                    FilterChip(
-                        selected = followVoice,
-                        onClick = { onFollowVoice(!followVoice) },
-                        label = { Text("Follow voice") },
-                    )
-                    // "Go back" by voice: same pipeline, exclusive with follow.
-                    FilterChip(
-                        selected = voiceCommands,
-                        onClick = { onVoiceCommands(!voiceCommands) },
-                        label = { Text("“$voiceCommandPhrase” by voice") },
-                    )
-                }
-                // One press flips the screen — no rotation-lock detour.
-                FilterChip(
-                    selected = false,
-                    onClick = onFlipOrientation,
-                    label = { Text(if (landscape) "⟳ Portrait" else "⟳ Landscape") },
-                )
-                FilterChip(
-                    selected = margins.isSet,
-                    onClick = onEditFrame,
-                    label = {
+            Column(
+                Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .navigationBarsPadding(),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
                         Text(
-                            if (margins.isSet) {
-                                "Frame ${(margins.h * 100).roundToInt()}" +
-                                    " / ${(margins.v * 100).roundToInt()}%"
-                            } else "Frame"
+                            title,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    },
-                )
-                FilterChip(
-                    selected = mirrorH,
-                    onClick = { onMirrorH(!mirrorH) },
-                    label = { Text("Mirror ↔") },
-                )
-                FilterChip(
-                    selected = mirrorV,
-                    onClick = { onMirrorV(!mirrorV) },
-                    label = { Text("Mirror ↕") },
-                )
-                FilterChip(
-                    selected = countdownSec != 0,
-                    onClick = onCountdownCycle,
-                    label = {
                         Text(
-                            when (countdownSec) {
-                                0 -> "Countdown off"
-                                START_ON_VOICE -> "Start on voice"
-                                else -> "Countdown $countdownSec s"
-                            },
+                            subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.6f),
                         )
-                    },
+                    }
+                    IconButton(onClick = onRestart) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Restart")
+                    }
+                    FilledIconButton(onClick = onPlay, modifier = Modifier.size(56.dp)) {
+                        Icon(
+                            Icons.Default.PlayArrow,
+                            contentDescription = "Play",
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
+                    IconButton(onClick = onExit) {
+                        Icon(Icons.Default.Close, contentDescription = "Exit")
+                    }
+                }
+                // Label and value share the slider's row: half the vertical cost
+                // of the old stacked label + slider blocks.
+                LabeledSlider(
+                    label = "Speed",
+                    value = "$wpm wpm",
+                    sliderValue = wpm.toFloat(),
+                    range = 40f..400f,
+                    onChange = { onWpmChange(it.roundToInt()) },
+                    onChangeFinished = onWpmChangeFinished,
                 )
+                LabeledSlider(
+                    label = "Size",
+                    value = "${fontSp.roundToInt()} sp",
+                    sliderValue = fontSp,
+                    range = 24f..72f,
+                    onChange = onFontChange,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (followAvailable) {
+                        FilterChip(
+                            selected = followVoice,
+                            onClick = { onFollowVoice(!followVoice) },
+                            label = { Text("Follow voice") },
+                        )
+                        // "Go back" by voice: same pipeline, exclusive with follow.
+                        FilterChip(
+                            selected = voiceCommands,
+                            onClick = { onVoiceCommands(!voiceCommands) },
+                            label = { Text("“$voiceCommandPhrase” by voice") },
+                        )
+                    }
+                    // One press flips the screen — no rotation-lock detour.
+                    FilterChip(
+                        selected = false,
+                        onClick = onFlipOrientation,
+                        label = { Text(if (landscape) "⟳ Portrait" else "⟳ Landscape") },
+                    )
+                    FilterChip(
+                        selected = margins.isSet,
+                        onClick = onEditFrame,
+                        label = {
+                            Text(
+                                if (margins.isSet) {
+                                    "Frame ${(margins.h * 100).roundToInt()}" +
+                                        " / ${(margins.v * 100).roundToInt()}%"
+                                } else "Frame"
+                            )
+                        },
+                    )
+                    FilterChip(
+                        selected = mirrorH,
+                        onClick = { onMirrorH(!mirrorH) },
+                        label = { Text("Mirror ↔") },
+                    )
+                    FilterChip(
+                        selected = mirrorV,
+                        onClick = { onMirrorV(!mirrorV) },
+                        label = { Text("Mirror ↕") },
+                    )
+                    FilterChip(
+                        selected = countdownSec != 0,
+                        onClick = onCountdownCycle,
+                        label = {
+                            Text(
+                                when (countdownSec) {
+                                    0 -> "Countdown off"
+                                    START_ON_VOICE -> "Start on voice"
+                                    else -> "Countdown $countdownSec s"
+                                },
+                            )
+                        },
+                    )
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun LabeledSlider(
+    label: String,
+    value: String,
+    sliderValue: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit,
+    onChangeFinished: (() -> Unit)? = null,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.width(44.dp),
+        )
+        Slider(
+            value = sliderValue,
+            onValueChange = onChange,
+            onValueChangeFinished = onChangeFinished,
+            valueRange = range,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(56.dp),
+        )
     }
 }
 
