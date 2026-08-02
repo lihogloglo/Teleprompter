@@ -437,6 +437,37 @@ Landscape now docks the controls as a 340 dp side sheet (portrait keeps the bott
 slider label/value moved inline into the slider rows, and the redundant wpm/pinch hint text is
 gone — the whole left of a landscape screen is now the resume tap zone. Voice commands match
 across decoder fragments (§5.3 join rule). v0.8.3.
+**M5 slice 5 — follow-voice overhaul** (2026-08-02, from user feedback: follow was jumpy, not
+flowy, stopped working after a while — untrustworthy; overhaul driven by an in-depth audit +
+industry research, both in `docs/voice-follow-research.md`; reuse-first working rule added to
+CLAUDE.md). Four layers changed, pending on-device validation:
+(1) **Engine reliability** ("stops working"): a dead AudioRecord (negative `read()` — audio
+server restart, OEM power management) is now detected and the mic reopened with backoff +
+"reconnecting" status, instead of silently spinning while the overlay claimed to listen; the
+sherpa stream is **rebuilt, not just reset**, after silence-only segments and every 6
+utterances (sherpa-onnx#1700: `reset()` keeps stale zipformer encoder states → recognition
+decays over long sessions); decode lag is an EMA surfaced in the overlay (near 100 ms = the
+mic buffer is overrunning); `numThreads` 2→4; event buffer 256→1024 (a dropped Final loses
+words forever); unchanged partials are no longer re-emitted 10×/s. Endpoint rule2 1.2→0.7 s
+(pauses commit words fast), rule3 30→20 s.
+(2) **Motion** ("jumpy"): the first-order position spring (lurch–stall at word rate, backward
+tugs from provisional fallbacks and freeze lead-removal) is replaced by a pure-Kotlin
+**velocity servo** (`follow/ScrollDynamics`, 8 shape-of-motion tests): feed-forward at the
+measured reading rate so the text *coasts* between matches, a ±0.35-line dead zone that
+swallows word-level anchor noise, correction only outside the zone, velocity smoothing
+(bounded acceleration), backward speed hard-capped at a gentle drift, coast decays 0.9 s
+after the last anchor advance. Industry-consensus design (PromptSmart's patented zone-based
+rate control, SmoothDamp-style damping) — motion with corrections, not made of corrections.
+(3) **Matcher evidence gating** (anchor creep): a single matched token now only advances the
+anchor contiguously (≤ smallSkip); longer skips go through the run tracker (≥2 consecutive
+near / 3 far) and, while FOLLOWING, a re-anchoring run must contain a content word — improv
+can no longer drag the anchor forward word by coincidental word and then poison the rejoin.
+Frozen/lost rejoins stay cheap (healing beats caution). All 20 replay tests pass unchanged.
+(4) **Models**: kroko streaming zipformers (2025, ~71 MB each) added for EN and FR and
+preferred when installed (`zipformer2`); language pick now prefers *installed* models. The
+2023 models remain as fallbacks. Hotword biasing investigated and deferred: sherpa-onnx needs
+a `bpe.vocab` none of our model repos ship (future slice: generate + host one, then
+`modified_beam_search` + per-script rare-word hints). v0.9.0.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

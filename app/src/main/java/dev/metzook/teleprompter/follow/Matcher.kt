@@ -32,14 +32,21 @@ data class FollowState(
 )
 
 data class MatcherConfig(
-    /** Forward fuzzy scan: how many script tokens a reader may skip unnoticed. */
+    /**
+     * Near window while frozen: how far ahead of the anchor a rejoin run may
+     * start on a fuzzy match (spurious-freeze healing).
+     */
     val maxSkipAhead: Int = 10,
     /**
-     * Skips beyond this need a content word (norm length ≥ [contentLen]):
-     * function words match ahead by coincidence and would drag the anchor
-     * forward during improv.
+     * Contiguous reading tolerance: a single matched token may advance the
+     * anchor across at most this many skipped script tokens. Anything farther
+     * is a *jump* and needs a multi-token run — single words match ahead by
+     * coincidence and would drag the anchor during improv (evidence gating;
+     * docs/voice-follow-research.md: PromptSmart requires 4 words, most
+     * implementations 2+ before moving position at all).
      */
     val smallSkip: Int = 2,
+    /** A run may only re-anchor while FOLLOWING if it contains a word this long. */
     val contentLen: Int = 4,
     /** Re-said recent tokens (stutter/emphasis) count as on-script, no advance. */
     val backRepeat: Int = 2,
@@ -114,8 +121,13 @@ class Matcher(
     private var lastMatchAnchor = -1
     private var rate = config.initialRate
 
-    // Rejoin run tracker: script position → length of the consecutive run ending there.
-    private var runs = HashMap<Int, Int>()
+    // Rejoin run tracker: script position → the consecutive run ending there.
+    // [Run.content] = the run contains a content word (≥ contentLen chars);
+    // while FOLLOWING, only such runs may re-anchor — runs of pure function
+    // words ("and then the") complete by coincidence during improv.
+    private data class Run(val len: Int, val content: Boolean)
+
+    private var runs = HashMap<Int, Run>()
     private var runsCarriedOver = false
 
     // Unmatched tokens since the freeze began; escalates FROZEN → LOST.
@@ -226,19 +238,19 @@ class Matcher(
             return
         }
 
-        // Greedy forward scan: nearest fuzzy match within the skip range.
-        // Long skips must land on a content word — "the"/"it"/"de" appear
-        // everywhere and would yank the anchor ahead on coincidences.
+        // Greedy forward scan, contiguous reading only: a single token may
+        // advance the anchor across at most [MatcherConfig.smallSkip] script
+        // tokens. Longer skips go through the run tracker (2+ tokens of
+        // evidence) — single-word skips were how improv dragged the anchor.
         var forward = -1
         var from = anchor + 1
-        var to = min(tokens.size - 1, anchor + config.maxSkipAhead)
+        var to = min(tokens.size - 1, anchor + 1 + config.smallSkip)
         visibleTokens?.let { vis ->
             from = max(from, vis.first)
             to = min(to, vis.last)
         }
         for (j in from..to) {
-            if (!Fuzzy.matches(tokens[j].norm, norm)) continue
-            if (j - (anchor + 1) <= config.smallSkip || norm.length >= config.contentLen) {
+            if (Fuzzy.matches(tokens[j].norm, norm)) {
                 forward = j
                 break
             }
@@ -340,18 +352,22 @@ class Matcher(
             return -1
         }
 
-        val next = HashMap<Int, Int>(candidates.size * 2)
+        val next = HashMap<Int, Run>(candidates.size * 2)
         var best = -1
         var bestRun = 0
         for (j in candidates) {
-            val run = 1 + (runs[j - 1] ?: runs[j - 2] ?: 0)
-            next[j] = run
+            val prev = runs[j - 1] ?: runs[j - 2]
+            val run = 1 + (prev?.len ?: 0)
+            val content = (prev?.content ?: false) || norm.length >= config.contentLen
+            next[j] = Run(run, content)
             val needed =
                 if (abs(j - anchor) <= config.nearRejoinDistance) config.nearRejoinRun
                 else config.rejoinRun
             if (run >= needed) {
-                val isJump = j > anchor + config.maxSkipAhead || j < anchor - config.backRepeat
-                if ((anyPosition || isJump) &&
+                val isJump = j > anchor + config.smallSkip || j < anchor - config.backRepeat
+                // While FOLLOWING, a jump must be anchored by a content word;
+                // frozen/lost rejoins stay cheap (healing beats caution there).
+                if ((anyPosition || (isJump && content)) &&
                     (run > bestRun || (run == bestRun && abs(j - anchor) < abs(best - anchor)))
                 ) {
                     best = j

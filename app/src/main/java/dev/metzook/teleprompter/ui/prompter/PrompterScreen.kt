@@ -121,6 +121,7 @@ import dev.metzook.teleprompter.follow.MatchLang
 import dev.metzook.teleprompter.follow.FollowState
 import dev.metzook.teleprompter.follow.Matcher
 import dev.metzook.teleprompter.follow.ScriptIndex
+import dev.metzook.teleprompter.follow.ScrollDynamics
 import dev.metzook.teleprompter.follow.SessionStats
 import dev.metzook.teleprompter.follow.SessionStatsBuilder
 import dev.metzook.teleprompter.follow.SpokenSegment
@@ -137,7 +138,6 @@ import dev.metzook.teleprompter.vault.Script
 import dev.metzook.teleprompter.vault.ScriptRepository
 import dev.metzook.teleprompter.vault.sections
 import dev.metzook.teleprompter.vault.toDisplaySegments
-import kotlin.math.exp
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -155,13 +155,19 @@ import kotlinx.coroutines.withContext
 private const val EYELINE_FRACTION = 0.30f
 
 /**
- * Follow-mode scroll feel: the target leads the anchor by [FOLLOW_LEAD_SEC]
- * of measured rate to compensate recognizer confirmation delay, and the
- * spring catches up briskly but eases back gently (SPEC §1: glide, never jump).
+ * Follow-mode motion feel (SPEC §1: glide, never jump): a velocity servo —
+ * feed-forward at the measured reading rate, a dead zone that swallows
+ * word-level anchor noise, and a hard cap on backward speed. The controller
+ * itself is pure Kotlin ([dev.metzook.teleprompter.follow.ScrollDynamics]);
+ * these constants scale it to the layout.
  */
-private const val FOLLOW_LEAD_SEC = 0.45f
-private const val CATCH_UP_TAU = 0.20f
-private const val EASE_BACK_TAU = 0.50f
+private const val DEADBAND_LINES = 0.35f
+private const val MAX_CATCHUP_VIEWPORTS_PER_SEC = 1.5f
+private const val MAX_EASE_BACK_LINES_PER_SEC = 0.6f
+
+/** Feed-forward keeps the text coasting this long after the last anchor
+ *  advance; longer silence means the reader paused, so the glide stops. */
+private const val COAST_AFTER_MATCH_SEC = 0.9f
 
 /** countdownSec sentinel: session starts when the reading voice is heard. */
 const val START_ON_VOICE = -1
@@ -244,7 +250,11 @@ fun PrompterScreen(
             val langTag = p.overrides.lang?.trim() ?: detected?.name?.lowercase()
             scriptLang = langTag
             val byLang = langTag?.let { tag ->
-                AsrModels.ALL.firstOrNull { it.lang.equals(tag, ignoreCase = true) }
+                // First *installed* model of the language: newer models sit
+                // earlier in ALL, so an installed upgrade wins automatically.
+                AsrModels.ALL.firstOrNull {
+                    it.lang.equals(tag, ignoreCase = true) && modelManager.isInstalled(it)
+                }
             }
             preferredModel = (listOfNotNull(byLang, AsrModels.byId(s.asrModelId)) + AsrModels.ALL)
                 .firstOrNull { modelManager.isInstalled(it) }
@@ -650,12 +660,18 @@ fun PrompterScreen(
         snapshotFlow { fontSp }.drop(1).debounce(600).collect { settingsRepo.setFontSizeSp(it) }
     }
 
-    // Scroll drive: voice-follow moves toward the anchor line (critically
-    // damped, plus rate feed-forward so motion glides between matches);
-    // classic mode keeps the fixed WPM drive. SPEC §3.1/§5.1: glide, never jump.
+    // Scroll drive. Voice-follow is a velocity servo (ScrollDynamics): the
+    // text coasts at the measured reading rate and anchor matches only *trim*
+    // that rate — motion with corrections, never motion made of corrections.
+    // A dead zone swallows word-level anchor noise (incl. provisional
+    // fallbacks), and backward speed is hard-capped: freezing must never tug
+    // the text back. Classic mode keeps the fixed WPM drive.
     LaunchedEffect(playing, followActive) {
         if (!playing) return@LaunchedEffect
+        val dynamics = ScrollDynamics()
         var last = withFrameNanos { it }
+        var lastAnchor = Int.MIN_VALUE
+        var lastAdvance = last
         while (playing) {
             val now = withFrameNanos { it }
             val dt = ((now - last) / 1_000_000_000f).coerceIn(0f, 0.1f)
@@ -663,51 +679,68 @@ fun PrompterScreen(
             // The hand always wins: while the reader holds the text or its
             // fling is still running, the drive waits — it must never cancel a
             // fling or drag the text back.
-            if (userScroll.busy || scrollState.isScrollInProgress) continue
+            if (userScroll.busy || scrollState.isScrollInProgress) {
+                dynamics.reset()
+                continue
+            }
             // The drive consumes the manual move itself, before its first tick
-            // after release: re-anchoring must win the race against the spring,
+            // after release: re-anchoring must win the race against the drive,
             // or even one frame of stale-anchor pull yanks the text back.
             if (userScroll.moved) {
                 userScroll.moved = false
                 if (followActive) reanchorToEyeline()
+                dynamics.reset()
                 continue
             }
             if (followActive) {
                 val layout = textLayout
                 val st = followState
-                if (layout != null && st.anchor >= 0) {
-                    val offset = (st.anchorCharEnd - 1).coerceIn(0, layout.layoutInput.text.length)
-                    val line = layout.getLineForOffset(offset)
-                    val lineTop = layout.getLineTop(line)
-                    val nextTop =
-                        if (line + 1 < layout.lineCount) layout.getLineTop(line + 1)
-                        else layout.getLineBottom(line)
-                    // Interpolate inside the line so the target moves word by
-                    // word instead of hopping a line-height at a time.
-                    val lineStart = layout.getLineStart(line)
-                    val lineEnd = layout.getLineEnd(line)
-                    val frac =
-                        if (lineEnd > lineStart) {
-                            (offset - lineStart).toFloat() / (lineEnd - lineStart)
-                        } else 0f
-                    val following = st.mode == FollowMode.FOLLOWING
-                    val lineHeightPx = with(density) { (fontSp * 1.4f).sp.toPx() }
-                    val pxPerToken =
-                        if (scriptIndex.tokens.isNotEmpty() && contentHeightPx > 0) {
-                            contentHeightPx.toFloat() / scriptIndex.tokens.size
-                        } else 0f
-                    val lead =
-                        if (following) {
-                            (st.tokensPerSec * pxPerToken * FOLLOW_LEAD_SEC)
-                                .coerceAtMost(lineHeightPx)
-                        } else 0f
-                    val target = (lineTop + frac * (nextTop - lineTop) + lead)
-                        .coerceIn(0f, scrollState.maxValue.toFloat())
-                    val value = scrollState.value.toFloat()
-                    val err = target - value
-                    val tau = if (err >= 0f) CATCH_UP_TAU else EASE_BACK_TAU
-                    scrollState.scrollBy(err * (1f - exp(-dt / tau)))
+                if (layout == null || st.anchor < 0 || viewportPx <= 0) {
+                    dynamics.reset()
+                    continue
                 }
+                if (st.anchor != lastAnchor) {
+                    lastAnchor = st.anchor
+                    lastAdvance = now
+                }
+                val offset = (st.anchorCharEnd - 1).coerceIn(0, layout.layoutInput.text.length)
+                val line = layout.getLineForOffset(offset)
+                val lineTop = layout.getLineTop(line)
+                val nextTop =
+                    if (line + 1 < layout.lineCount) layout.getLineTop(line + 1)
+                    else layout.getLineBottom(line)
+                // Interpolate inside the line so the target moves word by
+                // word instead of hopping a line-height at a time.
+                val lineStart = layout.getLineStart(line)
+                val lineEnd = layout.getLineEnd(line)
+                val frac =
+                    if (lineEnd > lineStart) {
+                        (offset - lineStart).toFloat() / (lineEnd - lineStart)
+                    } else 0f
+                val lineHeightPx = with(density) { (fontSp * 1.4f).sp.toPx() }
+                val pxPerToken =
+                    if (scriptIndex.tokens.isNotEmpty() && contentHeightPx > 0) {
+                        contentHeightPx.toFloat() / scriptIndex.tokens.size
+                    } else 0f
+                // Coast while the reader is actively advancing; stop the glide
+                // on silence, improv or lost — unmatched speech never scrolls.
+                val speaking = (now - lastAdvance) < COAST_AFTER_MATCH_SEC * 1_000_000_000L
+                val feed =
+                    if (st.mode == FollowMode.FOLLOWING && speaking) {
+                        st.tokensPerSec * pxPerToken
+                    } else 0f
+                val target = (lineTop + frac * (nextTop - lineTop))
+                    .coerceIn(0f, scrollState.maxValue.toFloat())
+                val delta = dynamics.step(
+                    dt = dt,
+                    current = scrollState.value.toFloat(),
+                    target = target,
+                    feedForwardPxPerSec = feed,
+                    deadbandPx = lineHeightPx * DEADBAND_LINES,
+                    maxForwardPxPerSec = viewportPx * MAX_CATCHUP_VIEWPORTS_PER_SEC,
+                    maxBackPxPerSec = lineHeightPx * MAX_EASE_BACK_LINES_PER_SEC,
+                )
+                if (delta != 0f) scrollState.scrollBy(delta)
             } else {
                 if (pxPerSec > 0f) scrollState.scrollBy(dt * pxPerSec)
                 if (scrollState.value >= scrollState.maxValue) playing = false
