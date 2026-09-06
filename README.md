@@ -47,6 +47,8 @@ Prompting
 
 Hands-free control
 
+- During voice following, say **“Command rewind”** (English) or **“Commande recul”**
+  (French) to go back one screen, then resume reading. Works while paused too.
 - Bluetooth remotes, page-turner clickers, foot pedals and keyboards (HID)
 - Volume keys, double-tap and long-press are all mappable to prompter actions
 - In follow mode the jump keys re-anchor by paragraph: retake or skip ahead without

@@ -118,6 +118,7 @@ import dev.metzook.teleprompter.asr.AsrState
 import dev.metzook.teleprompter.asr.ModelManager
 import dev.metzook.teleprompter.follow.FollowMode
 import dev.metzook.teleprompter.follow.FollowTrace
+import dev.metzook.teleprompter.follow.FollowVoiceCommands
 import dev.metzook.teleprompter.follow.LangDetect
 import dev.metzook.teleprompter.follow.MatchLang
 import dev.metzook.teleprompter.follow.FollowState
@@ -335,6 +336,8 @@ fun PrompterScreen(
         )
     }
     val matcher = remember(scriptIndex) { Matcher(scriptIndex) }
+    var voiceRetakeAnchor by remember(matcher) { mutableStateOf<Int?>(null) }
+    var voiceJumpVersion by remember { mutableIntStateOf(0) }
     // Voice commands ride the same ASR stream; language follows the script index.
     val commandDetector = remember(scriptIndex) { VoiceCommandDetector(scriptIndex.lang) }
     var followState by remember(matcher) { mutableStateOf(matcher.state) }
@@ -415,6 +418,9 @@ fun PrompterScreen(
     val engine = remember(asrModel, micGranted) {
         val m = asrModel
         if (m != null && micGranted) AsrEngine(modelManager.dirFor(m), m) else null
+    }
+    val followCommands = remember(scriptIndex, engine, followVoice) {
+        FollowVoiceCommands(scriptIndex.lang)
     }
     DisposableEffect(engine) {
         engine?.start()
@@ -562,6 +568,7 @@ fun PrompterScreen(
     }
 
     fun restart() {
+        voiceRetakeAnchor = null
         if (followVoice) {
             matcher.reanchor(-1)
             tracer?.let { it.log(FollowTrace.Event.Reanchor(it.elapsed(), -1)) }
@@ -604,6 +611,7 @@ fun PrompterScreen(
     // phone is on the rig, out of reach, so retakes are remote-driven (SPEC
     // principle 2: never touch mid-take). The scroll then glides to the anchor.
     fun reanchorTo(anchor: Int) {
+        voiceRetakeAnchor = null
         matcher.reanchor(anchor)
         tracer?.let { it.log(FollowTrace.Event.Reanchor(it.elapsed(), anchor)) }
         publishState(matcher.state)
@@ -618,6 +626,21 @@ fun PrompterScreen(
         // (the top spacer height equals the eyeline offset — see the layout).
         val line = layout.getLineForVerticalPosition(scrollState.value.toFloat())
         reanchorTo(scriptIndex.firstTokenAtOrAfter(layout.getLineStart(line)))
+    }
+
+    suspend fun voicePageBack(pages: Int) {
+        val layout = textLayout ?: return
+        if (viewportPx <= 0 || userScroll.busy) return
+        val target = (scrollState.value.toLong() - viewportPx.toLong() * pages)
+            .coerceAtLeast(0).toInt()
+        val line = layout.getLineForVerticalPosition(target.toFloat())
+        // Anchor just before the first word to read. Stop coasting until speech
+        // advances this anchor; the old utterance is removed by followCommands.
+        reanchorTo(scriptIndex.firstTokenAtOrAfter(layout.getLineStart(line)) - 1)
+        voiceRetakeAnchor = matcher.state.anchor
+        if (armed) armedAnchor = matcher.state.anchor
+        voiceJumpVersion++
+        scrollState.scrollTo(target)
     }
 
     fun perform(action: PrompterAction) {
@@ -644,11 +667,18 @@ fun PrompterScreen(
     // words); speech during pause is skipped, so resuming never replays a backlog.
     // The command detector listens whenever its mode is on — "go back" must work
     // paused or playing (the user is always in control).
-    LaunchedEffect(engine, matcher) {
+    LaunchedEffect(engine, matcher, followCommands) {
         var tracedVis: IntRange? = null
         var tracedAnchor = Int.MIN_VALUE
         var tracedMode: FollowMode? = null
         engine?.events?.collect { event ->
+            val routed = if (followVoice) {
+                followCommands.onWords(event.utterance, event.words, event is AsrEvent.Final)
+            } else null
+            if (routed != null && routed.pagesBack > 0 && summaryStats == null) {
+                voicePageBack(routed.pagesBack)
+            }
+            val trackingWords = routed?.words ?: event.words
             if (followVoice && (playing || armed)) {
                 val vis = visibleTokenRange()
                 matcher.visibleTokens = vis
@@ -660,16 +690,19 @@ fun PrompterScreen(
                     }
                     tr.log(
                         FollowTrace.Event.Words(
-                            t, event.utterance, event is AsrEvent.Final, event.words,
+                            t, event.utterance, event is AsrEvent.Final, trackingWords,
                         ),
                     )
                 }
                 val st = matcher.onWords(
                     event.utterance,
-                    event.words,
+                    trackingWords,
                     final = event is AsrEvent.Final,
                 )
                 publishState(st)
+                if (voiceRetakeAnchor != null && st.anchor != voiceRetakeAnchor) {
+                    voiceRetakeAnchor = null
+                }
                 if (st.anchor != tracedAnchor || st.mode != tracedMode) {
                     tracedAnchor = st.anchor
                     tracedMode = st.mode
@@ -686,10 +719,10 @@ fun PrompterScreen(
                     playing = true
                 }
             } else {
-                matcher.skip(event.utterance, event.words)
+                matcher.skip(event.utterance, trackingWords)
                 tracer?.let {
                     it.log(
-                        FollowTrace.Event.Skip(it.elapsed(), event.utterance, event.words.size),
+                        FollowTrace.Event.Skip(it.elapsed(), event.utterance, trackingWords.size),
                     )
                 }
             }
@@ -766,7 +799,7 @@ fun PrompterScreen(
     // A dead zone swallows word-level anchor noise (incl. provisional
     // fallbacks), and backward speed is hard-capped: freezing must never tug
     // the text back. Classic mode keeps the fixed WPM drive.
-    LaunchedEffect(playing, followActive) {
+    LaunchedEffect(playing, followActive, voiceJumpVersion) {
         if (!playing) return@LaunchedEffect
         val dynamics = ScrollDynamics()
         var last = withFrameNanos { it }
@@ -794,6 +827,10 @@ fun PrompterScreen(
                 continue
             }
             if (followActive) {
+                if (voiceRetakeAnchor != null) {
+                    dynamics.reset()
+                    continue
+                }
                 val layout = textLayout
                 val st = followState
                 if (layout == null || st.anchor < 0 || viewportPx <= 0) {
@@ -1048,6 +1085,8 @@ fun PrompterScreen(
                 val offMark = if (offScreen) " · ⚠ anchor off-screen" else ""
                 val statusText = when {
                     asrState.error != null -> asrState.error
+                    followActive && voiceRetakeAnchor != null ->
+                        if (playing || armed) "read to continue · $lang" else "paused · $lang"
                     !asrState.listening -> "starting…"
                     followActive && followState.mode == FollowMode.LOST ->
                         "lost · read any line, or use the remote$offMark"
@@ -1076,6 +1115,13 @@ fun PrompterScreen(
                         style = MaterialTheme.typography.labelSmall,
                     )
                     val line = asrState.partial.ifBlank { asrState.lastFinal }
+                    if (followActive) {
+                        Text(
+                            "“${followCommands.hint}” · back one screen",
+                            color = Color.White.copy(alpha = 0.6f),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     if (asrOverlayOn && line.isNotBlank()) {
                         Text(
                             line.takeLast(120),
@@ -1193,7 +1239,7 @@ fun PrompterScreen(
                 onFollowVoice = { on ->
                     followVoice = on
                     if (on) {
-                        // Exclusive with command mode: one interpretation of speech.
+                        // Standalone command mode stays separate; follow has its own phrases.
                         if (voiceCommands) {
                             voiceCommands = false
                             scope.launch { settingsRepo.setVoiceCommands(false) }
@@ -1207,6 +1253,7 @@ fun PrompterScreen(
                 },
                 voiceCommands = voiceCommands,
                 voiceCommandPhrase = commandDetector.hint,
+                followCommandPhrase = followCommands.hint,
                 onVoiceCommands = { on ->
                     voiceCommands = on
                     if (on) {
@@ -1260,6 +1307,7 @@ private fun ControlsPanel(
     onFollowVoice: (Boolean) -> Unit,
     voiceCommands: Boolean,
     voiceCommandPhrase: String,
+    followCommandPhrase: String,
     onVoiceCommands: (Boolean) -> Unit,
     onPlay: () -> Unit,
     onRestart: () -> Unit,
@@ -1345,7 +1393,7 @@ private fun ControlsPanel(
                             onClick = { onFollowVoice(!followVoice) },
                             label = { Text("Follow voice") },
                         )
-                        // "Go back" by voice: same pipeline, exclusive with follow.
+                        // Standalone single-word commands for classic scrolling.
                         FilterChip(
                             selected = voiceCommands,
                             onClick = { onVoiceCommands(!voiceCommands) },
@@ -1392,6 +1440,12 @@ private fun ControlsPanel(
                                 },
                             )
                         },
+                    )
+                }
+                if (followVoice) {
+                    Text(
+                        "Say “$followCommandPhrase” to go back one screen, then keep reading.",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }

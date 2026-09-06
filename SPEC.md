@@ -192,9 +192,22 @@ mirror: false
   v1 ships HID key mapping (center/prev/next slots); MediaSession for AVRCP-only remotes later.
 - All actions available as mappable commands (mirroring obsidian-teleprompter's
   everything-is-a-command approach).
-- **Voice command mode** (shipped M5 s4): a spoken command = jump back, riding the same ASR
+- **Page back during follow voice** (v0.9.4, 2026-09-06): say **"Command rewind"**
+  (English) or **"Commande recul"** (French; also accepts the homophonic spelling
+  "commande recule"). Always available in follow mode, playing, armed or paused.
+  Moves back one reading viewport, clamped to the top, and resets tracking to the
+  new eyeline. Holds there until reading resumes; preserves play/pause/armed state.
+  Both words must match exactly after normalization, within one ASR utterance;
+  no fuzzy matching or single-word aliases. Waits for a word boundary or final
+  result, fires once per occurrence, and excludes command/pre-jump speech from
+  tracking so growing partials cannot pull the reader forward again. Touch/fling
+  and the session summary take priority. The command is shown in the controls
+  and listening overlay. Transcript regressions cover detection and matcher
+  resumption; real-microphone accuracy still needs device validation. Research,
+  rationale and limitations: `docs/follow-voice-commands.md`.
+- **Standalone voice command mode** (shipped M5 s4): a spoken command = jump back, riding the same ASR
   pipeline as follow mode. A mode of its own, mutually exclusive with follow-voice (one
-  interpretation of speech at a time); works paused or playing. The command is **one rare,
+  standalone mode at a time; follow now has its own page-back phrases); works paused or playing. The command is **one rare,
   phonetically distinctive word per language** — en **"rewind"**, fr **"rembobine"** — because
   multi-word phrases ("retour arrière") decode unreliably and common words collide with script
   text (device feedback 2026-07-30). Normalized like script tokens; command tokens ≥ 8 chars
