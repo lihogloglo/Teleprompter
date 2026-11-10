@@ -181,6 +181,9 @@ private const val DECODE_MS_TRACE_STEP = 5
 /** Slow heartbeat so a silent-but-healthy engine still stamps the trace. */
 private const val ASR_TRACE_HEARTBEAT_NANOS = 2_000_000_000L
 
+/** How long the on-screen confirmation of a spoken page-back stays up. */
+private const val VOICE_JUMP_FLASH_MS = 1200L
+
 /** countdownSec sentinel: session starts when the reading voice is heard. */
 const val START_ON_VOICE = -1
 
@@ -338,6 +341,15 @@ fun PrompterScreen(
     val matcher = remember(scriptIndex) { Matcher(scriptIndex) }
     var voiceRetakeAnchor by remember(matcher) { mutableStateOf<Int?>(null) }
     var voiceJumpVersion by remember { mutableIntStateOf(0) }
+    var voiceJumpFlash by remember { mutableStateOf(false) }
+    // Confirm a spoken page-back at once: recognition already costs about a
+    // second, and an unconfirmed command gets said again, paging back twice.
+    LaunchedEffect(voiceJumpVersion) {
+        if (voiceJumpVersion == 0) return@LaunchedEffect
+        voiceJumpFlash = true
+        delay(VOICE_JUMP_FLASH_MS)
+        voiceJumpFlash = false
+    }
     // Voice commands ride the same ASR stream; language follows the script index.
     val commandDetector = remember(scriptIndex) { VoiceCommandDetector(scriptIndex.lang) }
     var followState by remember(matcher) { mutableStateOf(matcher.state) }
@@ -420,7 +432,7 @@ fun PrompterScreen(
         if (m != null && micGranted) AsrEngine(modelManager.dirFor(m), m) else null
     }
     val followCommands = remember(scriptIndex, engine, followVoice) {
-        FollowVoiceCommands(scriptIndex.lang)
+        FollowVoiceCommands(scriptIndex)
     }
     DisposableEffect(engine) {
         engine?.start()
@@ -672,8 +684,15 @@ fun PrompterScreen(
         var tracedAnchor = Int.MIN_VALUE
         var tracedMode: FollowMode? = null
         engine?.events?.collect { event ->
+            // The visible range lets the detector ignore command-like wording
+            // printed in the script itself while it is on screen.
             val routed = if (followVoice) {
-                followCommands.onWords(event.utterance, event.words, event is AsrEvent.Final)
+                followCommands.onWords(
+                    event.utterance,
+                    event.words,
+                    event is AsrEvent.Final,
+                    visibleTokenRange(),
+                )
             } else null
             if (routed != null && routed.pagesBack > 0 && summaryStats == null) {
                 voicePageBack(routed.pagesBack)
@@ -1133,6 +1152,24 @@ fun PrompterScreen(
                         )
                     }
                 }
+            }
+
+            AnimatedVisibility(
+                visible = voiceJumpFlash,
+                enter = fadeIn(tween(80)),
+                exit = fadeOut(tween(400)),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 24.dp),
+            ) {
+                Text(
+                    "↑ ${followCommands.hint}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier
+                        .background(Color(0xCC2E7D32), RoundedCornerShape(50))
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                )
             }
 
             if (countdown > 0) {

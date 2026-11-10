@@ -192,19 +192,25 @@ mirror: false
   v1 ships HID key mapping (center/prev/next slots); MediaSession for AVRCP-only remotes later.
 - All actions available as mappable commands (mirroring obsidian-teleprompter's
   everything-is-a-command approach).
-- **Page back during follow voice** (v0.9.4, 2026-09-06): say **"Command rewind"**
-  (English) or **"Commande recul"** (French; also accepts the homophonic spelling
-  "commande recule"). Always available in follow mode, playing, armed or paused.
-  Moves back one reading viewport, clamped to the top, and resets tracking to the
-  new eyeline. Holds there until reading resumes; preserves play/pause/armed state.
-  Both words must match exactly after normalization, within one ASR utterance;
-  no fuzzy matching or single-word aliases. Waits for a word boundary or final
-  result, fires once per occurrence, and excludes command/pre-jump speech from
-  tracking so growing partials cannot pull the reader forward again. Touch/fling
-  and the session summary take priority. The command is shown in the controls
-  and listening overlay. Transcript regressions cover detection and matcher
-  resumption; real-microphone accuracy still needs device validation. Research,
-  rationale and limitations: `docs/follow-voice-commands.md`.
+- **Page back during follow voice** (v0.9.4, 2026-09-06; retuned on measured decoder output
+  v0.9.5, 2026-11-10): say **"Command rewind"** (English) or **"Commande recul"** (French).
+  Always available in follow mode, playing, armed or paused. Moves back one reading
+  viewport, clamped to the top, and resets tracking to the new eyeline. Holds there
+  until reading resumes and preserves play/pause/armed state. A green "↑ Commande recul"
+  pill confirms each jump for 1.2 s.
+  v0.9.5 accepts the forms kroko-fr really emits for the spoken phrase. The /d/ of
+  *commande* often slides onto the next word, so "Comment de recul" / "Comment te recule"
+  are accepted, plus homophone endings and a pause that splits the phrase across one
+  endpoint. A strong prefix fires on the partial the moment its ending appears. The weak
+  "comment" waits for a stable ending, since "comment reculer" is ordinary French.
+  Command-like wording printed in the visible script only accepts the exact phrase.
+  Measured on real decoder output for synthetic speech: hit rate 44% → 79% clean and
+  28% → 48% noisy, median delay 1.54 s → 1.09 s, still 0 false fires on narration. The
+  ~1 s floor is kroko-fr's 1.28 s decode chunk. Hotword biasing works without a shipped
+  `bpe.vocab` (generated minimal vocab) but needs `modified_beam_search`, which raised
+  narration WER 5.3% → 6.3–9.5%, so it is not adopted. Touch/fling and the session
+  summary take priority. Research, numbers and the full contract:
+  `docs/follow-voice-commands.md`; bench: `tools/voice-command-bench`.
 - **Standalone voice command mode** (shipped M5 s4): a spoken command = jump back, riding the same ASR
   pipeline as follow mode. A mode of its own, mutually exclusive with follow-voice (one
   standalone mode at a time; follow now has its own page-back phrases); works paused or playing. The command is **one rare,
@@ -216,8 +222,9 @@ mirror: false
   fr model and can come out as several small words ("ram bobine"), so each command token may
   consume up to 3 adjacent spoken tokens joined before the comparison (device feedback
   2026-08-02 — "rambobine" didn't fire). Decoder-level hotword biasing (sherpa-onnx
-  `hotwords_file` + `modified_beam_search`) would fix this at the source but needs a
-  `bpe.vocab` neither packaged model repo ships. No wake word, so a script containing the
+  `hotwords_file` + `modified_beam_search`) is possible with a generated minimal
+  `bpe.vocab` (2026-11-10), but beam search measurably hurts narration recognition (see
+  the page-back entry above). No wake word, so a script containing the
   word (or a near-joining neighbour pair) will trigger it — the status overlay always shows
   the active word. Detector is pure Kotlin (`follow/VoiceCommands.kt`), fires once per
   occurrence, replay-tested.
@@ -535,6 +542,21 @@ Tooling: ASR health (`listening`, decode-lag EMA, mic error) now goes into the t
 single session distinguishes matcher-side from mic-death / thermal / encoder-decay causes;
 `tools/trace-report.py` renders the timeline and the verdict, `tools/pull-traces.ps1` pulls
 and reports in one command over adb. v0.9.3.
+**M5 slice 8 — page-back command, measured instead of guessed** (2026-11-10, user feedback:
+"commande recul" often needs saying several times, and lags even when it works). A
+reproducible bench (`tools/voice-command-bench`) feeds piper-TTS French through kroko-fr
+exactly as AsrEngine does. Its first run explained both complaints. Misses: the decoder
+writes "Comment de recul" for the phrase about as often as "commande recul", and v0.9.4
+matched exact spellings only. Lag: kroko-fr decodes in 1.28 s chunks, and v0.9.4 then
+waited for one more word or the endpoint. The detector was rebuilt around measured
+output (tolerant phrase grammar, fire-on-partial for strong prefixes, one-endpoint span,
+script guard, §5.3). The real decoder event stream is checked in as a replay fixture
+(`VoiceCommandBenchTest`): clean 44% → 79%, noisy 28% → 48%, median delay 1.54 s → 1.09 s,
+0 false fires. Hotword biasing (generated bpe.vocab) and beam search were measured and
+rejected, since both hurt narration WER. On-screen confirmation of each jump stops repeats
+that would page back twice. Next if field misses persist: "Retour retour" transcribed
+word-exact 73% vs 13–17% for "Commande recul" in the same bench, so it is the best
+measured second phrase. v0.9.5.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

@@ -14,8 +14,8 @@ android {
         applicationId = "dev.metzook.teleprompter"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.9.4"
+        versionCode = 17
+        versionName = "0.9.5"
     }
 
     buildTypes {
