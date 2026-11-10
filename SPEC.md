@@ -193,7 +193,10 @@ mirror: false
 - All actions available as mappable commands (mirroring obsidian-teleprompter's
   everything-is-a-command approach).
 - **Page back during follow voice** (v0.9.4, 2026-09-06; retuned on measured decoder output
-  v0.9.5, 2026-11-10): say **"Command rewind"** (English) or **"Commande recul"** (French).
+  v0.9.5, 2026-11-10): say **"Commande recul"** or **"Retour retour"** (French), or
+  **"Command rewind"** or **"Go back, go back"** (English). The doubled phrases transcribe
+  far more reliably (bench: 70%/60% and 90%/85% clean/noisy), are never said in narration,
+  and wait for a stable ending ("retour…" may grow into "retournez").
   Always available in follow mode, playing, armed or paused. Moves back one reading
   viewport, clamped to the top, and resets tracking to the new eyeline. Holds there
   until reading resumes and preserves play/pause/armed state. A green "↑ Commande recul"
@@ -554,9 +557,14 @@ script guard, §5.3). The real decoder event stream is checked in as a replay fi
 (`VoiceCommandBenchTest`): clean 44% → 79%, noisy 28% → 48%, median delay 1.54 s → 1.09 s,
 0 false fires. Hotword biasing (generated bpe.vocab) and beam search were measured and
 rejected, since both hurt narration WER. On-screen confirmation of each jump stops repeats
-that would page back twice. Next if field misses persist: "Retour retour" transcribed
-word-exact 73% vs 13–17% for "Commande recul" in the same bench, so it is the best
-measured second phrase. v0.9.5.
+that would page back twice. Then, on the user's pick, second phrases measured the same
+way: "Retour retour" (it transcribed word-exact 73% vs 13–17% for "Commande recul") and
+"Go back, go back" for English (88% vs 55% for "Command rewind"). "Command rewind" got
+the measured tolerance too ("a man rewind", "amand rewind"): 43% → 75% clean. Per-phrase
+floors over both languages' fixtures, 0 false fires. CI (`.github/workflows/android.yml`)
+now runs the unit tests and builds the APK on every push, and publishes a release from
+main when versionName is new. It signs with the existing debug key from a repository
+secret, so updates install in place. v0.9.5.
 **To do — next feature: distance→size calculator** (§6.1 rungs 1–2, noted 2026-07-27). Then:
 appearance profiles, marker-log file export, MediaSession for AVRCP remotes, rehearsal mode.
 Battery/thermal over a 30+ min session still unmeasured (§9 risk).

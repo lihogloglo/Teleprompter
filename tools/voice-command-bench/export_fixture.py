@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Cached bench events -> gzipped TSV replay fixture for the JVM tests.
-Lines:  C <tab> clip <tab> kind <tab> voice <tab> speed <tab> ctx <tab> style <tab> cond <tab> cmd_end <tab> text
+Lines:  C <tab> clip <tab> kind <tab> voice <tab> speed <tab> ctx <tab> phrase/style <tab> cond <tab> cmd_end <tab> text
         E <tab> clip <tab> t <tab> utterance <tab> F|P <tab> words(space) <tab> times(space)"""
 import gzip, json, sys
 data = json.load(open(sys.argv[1])); out = gzip.open(sys.argv[2], "wt", encoding="utf-8", compresslevel=9)

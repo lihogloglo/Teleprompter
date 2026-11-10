@@ -1136,7 +1136,7 @@ fun PrompterScreen(
                     val line = asrState.partial.ifBlank { asrState.lastFinal }
                     if (followActive) {
                         Text(
-                            "“${followCommands.hint}” · back one screen",
+                            followCommands.hints.joinToString(" or ") { "“$it”" } + " · back one screen",
                             color = Color.White.copy(alpha = 0.6f),
                             style = MaterialTheme.typography.labelSmall,
                         )
@@ -1163,7 +1163,7 @@ fun PrompterScreen(
                     .padding(top = 24.dp),
             ) {
                 Text(
-                    "↑ ${followCommands.hint}",
+                    "↑ back one screen",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier
@@ -1290,7 +1290,7 @@ fun PrompterScreen(
                 },
                 voiceCommands = voiceCommands,
                 voiceCommandPhrase = commandDetector.hint,
-                followCommandPhrase = followCommands.hint,
+                followCommandPhrase = followCommands.hints.joinToString("” or “"),
                 onVoiceCommands = { on ->
                     voiceCommands = on
                     if (on) {

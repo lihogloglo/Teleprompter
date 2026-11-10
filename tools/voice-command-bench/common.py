@@ -4,15 +4,17 @@ import numpy as np
 import sherpa_onnx
 
 MODELS = os.environ.get("VCB_MODELS", os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"))
-FR_ASR = os.path.join(MODELS, "sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06")
+ASR = {lang: os.path.join(MODELS, f"sherpa-onnx-streaming-zipformer-{lang}-kroko-2025-08-06")
+       for lang in ("fr", "en")}
 SR = 16000
 CHUNK = 1600  # AsrEngine.CHUNK: 100 ms per decode step
 
 
-def recognizer(method="greedy_search", hotwords_file="", hotwords_score=1.5, bpe_vocab=""):
+def recognizer(lang="fr", method="greedy_search", hotwords_file="", hotwords_score=1.5, bpe_vocab=""):
     """Same settings as AsrEngine.capture() (endpoint rules, threads, model type)."""
-    kw = dict(tokens=f"{FR_ASR}/tokens.txt", encoder=f"{FR_ASR}/encoder.onnx",
-              decoder=f"{FR_ASR}/decoder.onnx", joiner=f"{FR_ASR}/joiner.onnx",
+    d = ASR[lang]
+    kw = dict(tokens=f"{d}/tokens.txt", encoder=f"{d}/encoder.onnx",
+              decoder=f"{d}/decoder.onnx", joiner=f"{d}/joiner.onnx",
               num_threads=4, sample_rate=SR, feature_dim=80, enable_endpoint_detection=True,
               rule1_min_trailing_silence=2.4, rule2_min_trailing_silence=0.7,
               rule3_min_utterance_length=20.0, decoding_method=method, model_type="zipformer2")

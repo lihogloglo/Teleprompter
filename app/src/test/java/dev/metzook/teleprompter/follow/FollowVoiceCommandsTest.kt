@@ -34,6 +34,65 @@ class FollowVoiceCommandsTest {
         }
     }
 
+    /** Forms kroko-en really produced for spoken "command rewind". */
+    @Test
+    fun englishDecoderVariantsFire() {
+        listOf("A man rewind", "Amand rewind", "demand rewind", "mand rewind", "command rewinds")
+            .forEachIndexed { id, text ->
+                assertEquals(text, 1, FollowVoiceCommands(MatchLang.EN).onWords(id, words(text), true).pagesBack)
+            }
+        val d = FollowVoiceCommands(MatchLang.EN)
+        listOf("a man rewinds the tape", "the man who rewound it", "they demand rewinding")
+            .forEachIndexed { id, text -> assertEquals(text, 0, d.onWords(id, words(text), true).pagesBack) }
+    }
+
+    @Test
+    fun everyLanguageOffersADoubledPhraseToo() {
+        assertEquals(listOf("Commande recul", "Retour retour"), FollowVoiceCommands(MatchLang.FR).hints)
+        assertEquals(listOf("Command rewind", "Go back, go back"), FollowVoiceCommands(MatchLang.EN).hints)
+        val fr = FollowVoiceCommands(MatchLang.FR)
+        val en = FollowVoiceCommands(MatchLang.EN)
+        listOf(
+            "Retour retour", "Retour, retour !", "retours retour", "retour autour", "votre tour retour",
+            "photo retour", "retour au retour",
+        ).forEachIndexed { id, text ->
+            assertEquals(text, 1, fr.onWords(id, words(text), true).pagesBack)
+        }
+        listOf("Go back, go back!", "go back go back", "Go back, back.", "Boe back, go back").forEachIndexed { id, text ->
+            assertEquals(text, 1, en.onWords(id, words(text), true).pagesBack)
+        }
+    }
+
+    /** "retour…" / "back…" may still grow into narration ("retournez", "backwards"). */
+    @Test
+    fun doubledPhrasesWaitForAStableEnding() {
+        val fr = FollowVoiceCommands(MatchLang.FR)
+        val held = fr.onWords(0, words("alors retour retour"), false)
+        assertEquals(0, held.pagesBack)
+        assertEquals(listOf("alors"), held.words.map { it.text })
+        assertEquals(1, fr.onWords(0, words("alors retour retour je"), false).pagesBack)
+
+        val en = FollowVoiceCommands(MatchLang.EN)
+        assertEquals(0, en.onWords(0, words("go back go back"), false).pagesBack)
+        assertEquals(1, en.onWords(0, words("go back go back so"), false).pagesBack)
+    }
+
+    @Test
+    fun narrationAroundTheDoubledPhrasesDoesNotFire() {
+        val fr = FollowVoiceCommands(MatchLang.FR)
+        listOf(
+            "Au retour, retournez la carte", "Le retour du héros, c'est le retour de l'espoir",
+            "un aller-retour à Lyon", "retour à la case départ", "au retour du voyage",
+            "faites le tour du lac", "autour de la table", "une photo du retour",
+        ).forEachIndexed { id, text -> assertEquals(text, 0, fr.onWords(id, words(text), true).pagesBack) }
+        val en = FollowVoiceCommands(MatchLang.EN)
+        listOf(
+            "go back and forth", "go back, go backwards", "we had back to back meetings",
+            "back and forth, back and forth", "come back, go back", "turn back, back off", "back, back",
+            "look back, go back to sleep",
+        ).forEachIndexed { id, text -> assertEquals(text, 0, en.onWords(id, words(text), true).pagesBack) }
+    }
+
     @Test
     fun ordinaryNarrationAndNearMissesDoNotFire() {
         val cases = mapOf(
