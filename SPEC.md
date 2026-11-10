@@ -261,6 +261,13 @@ a negative-scale transform.
 
 ## 6. Quality-of-life features (brainstormed backlog)
 
+- **Onboarding / feature discovery** (noted 2026-11-10, priority): follow-voice is the app's
+  headline feature but is only reachable through Settings, so new users meet a plain
+  auto-scroller. Needs a first-run flow (or at minimum a prominent entry point on the
+  prompter / library screen) that offers follow-voice, downloads the speech model and
+  grants mic permission, and teaches the voice commands ("Retour retour" / "Go back, go
+  back"). Research prior art (PromptSmart, BIGVU, Teleprompter Premium first-run flows)
+  before designing, per CLAUDE.md.
 - **Rehearsal mode**: run the script off-camera; app records per-section timing and marks
   "stumble hotspots" (where you froze/rewound most). Heatmap over the script.
 - **Retake flow**: one-tap "back to last section start"; the rejoin logic makes redoing a line
